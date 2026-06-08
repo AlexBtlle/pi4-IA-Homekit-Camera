@@ -55,11 +55,16 @@ apt-get install -y \
 # person detection runs through OpenCV's built-in DNN module.
 
 # -----------------------------------------------------------------------
-# 2. Node.js LTS (for homebridge)
+# 2. Node.js 22 (for homebridge)
 # -----------------------------------------------------------------------
-if ! command -v node &>/dev/null; then
-    info "Installing Node.js LTS..."
-    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+# Pinned to Node 22: the homebridge-camera-ffmpeg HKSV beta (3.2.0-beta.0)
+# only supports node ^20 || ^22. On Node 24 its compiled ESM imports fail
+# ("Cannot find module .../dist/logger") and the whole plugin refuses to load.
+NODE_MAJOR=22
+CURRENT_NODE_MAJOR="$(node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/')"
+if [[ "${CURRENT_NODE_MAJOR}" != "${NODE_MAJOR}" ]]; then
+    info "Installing Node.js ${NODE_MAJOR}.x (current: ${CURRENT_NODE_MAJOR:-none})..."
+    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
     apt-get install -y nodejs
 else
     info "Node.js $(node --version) already installed, skipping."
