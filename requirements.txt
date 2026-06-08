@@ -1,0 +1,5 @@
+PyYAML>=6.0
+numpy>=1.24
+opencv-python-headless>=4.8
+tflite-runtime>=2.14.0
+# picamera2 is installed via apt (python3-picamera2), not pip
