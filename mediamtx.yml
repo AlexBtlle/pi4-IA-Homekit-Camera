@@ -9,8 +9,10 @@
 logLevel: info
 logDestinations: [stdout]
 
-# Protocols to enable
-protocols: [tcp]
+# Protocols to enable.
+# 'rtspTransports' (renamed from 'protocols' in newer mediamtx versions):
+# TCP only is the most reliable for local relaying and HKSV.
+rtspTransports: [tcp]
 
 rtspAddress: :8554
 rtmpAddress: :1935
@@ -18,8 +20,10 @@ hlsAddress: :8888
 webrtcAddress: :8889
 srtAddress: :8890
 
-# Authentication — disabled for local use; enable if Pi is on an untrusted network
-authMethod: noAuth
+# Authentication — mediamtx's default 'internal' method ships with an
+# anonymous 'any' user that already permits publish/read, so no auth
+# config is needed for local use. (The old 'authMethod: noAuth' key was
+# removed in newer versions and causes a fatal startup error.)
 
 ###############################################################################
 # Camera path
