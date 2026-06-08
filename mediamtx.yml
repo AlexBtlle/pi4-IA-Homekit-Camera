@@ -1,50 +1,20 @@
-# mediamtx — lightweight RTSP/RTMP/WebRTC server
+# mediamtx — lightweight RTSP relay
 # Docs: https://github.com/bluenviron/mediamtx
 
-###############################################################################
-# Global settings
-###############################################################################
-
-# Log level: debug | info | warn | error
 logLevel: info
 logDestinations: [stdout]
 
-# Protocols to enable.
-# 'rtspTransports' (renamed from 'protocols' in newer mediamtx versions):
-# TCP only is the most reliable for local relaying and HKSV.
 rtspTransports: [tcp]
-
 rtspAddress: :8554
+
+# All other protocols disabled — only RTSP is needed
 rtmpAddress: :1935
 hlsAddress: :8888
 webrtcAddress: :8889
 srtAddress: :8890
 
-# Authentication — mediamtx's default 'internal' method ships with an
-# anonymous 'any' user that already permits publish/read, so no auth
-# config is needed for local use. (The old 'authMethod: noAuth' key was
-# removed in newer versions and causes a fatal startup error.)
-
-###############################################################################
-# Camera path
-###############################################################################
-
 paths:
   camera:
-    # Run rpicam-vid the moment mediamtx starts (not on-demand).
-    # MTX_PATH and RTSP_PORT are injected by mediamtx as environment variables.
-    # The command publishes its H264 output to mediamtx as an RTSP stream.
-    # mediamtx runs runOnInit WITHOUT a shell (it splits the string by
-    # spaces and execs the binary directly), so a bare '|' pipe is passed
-    # as arguments to rpicam-vid instead of creating a pipeline. We must
-    # explicitly invoke a shell with 'bash -c' so the '|' is interpreted.
-    # $MTX_PATH and $RTSP_PORT are exported into the environment by mediamtx.
-    runOnInit: >-
-      bash -c "rpicam-vid --codec h264 --inline --nopreview --timeout 0
-      --width 1920 --height 1080 --framerate 30 -o - |
-      ffmpeg -hide_banner -loglevel warning -f h264 -i pipe:0
-      -c:v copy -rtsp_transport tcp -f rtsp
-      rtsp://localhost:$RTSP_PORT/$MTX_PATH"
-
-    # Restart the camera process if it crashes
-    runOnInitRestart: yes
+    # Stream is published here by our Python service (picamera2 → ffmpeg → RTSP).
+    # mediamtx passively relays it to any consumer (homebridge-camera-ffmpeg).
+    # No runOnInit — the Pi camera is managed by the pi4cam.service Python process.

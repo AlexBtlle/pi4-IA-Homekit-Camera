@@ -7,7 +7,9 @@ INSTALL_DIR="/opt/pi4cam"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_USER="${SUDO_USER:-pi}"
 
-# Detect mediamtx arch suffix from host CPU
+MEDIAMTX_VERSION_OVERRIDE="${MEDIAMTX_VERSION:-}"
+TFLITE_MODEL_URL="https://storage.googleapis.com/download.tensorflow.org/models/tflite/coco_ssd_mobilenet_v1_1.0_quant_2018_06_29.zip"
+
 case "$(uname -m)" in
     aarch64) MEDIAMTX_ARCH="linux_arm64v8" ;;
     armv7l)  MEDIAMTX_ARCH="linux_arm7"    ;;
@@ -29,59 +31,64 @@ fatal() { echo "ERROR: $*" >&2; exit 1; }
 info "Installing system packages..."
 apt-get update -qq
 apt-get install -y \
+    python3-picamera2 \
+    python3-libcamera \
+    python3-venv \
     ffmpeg \
     rpicam-apps \
     curl \
     ca-certificates \
     gnupg \
     lsb-release \
-    jq
+    jq \
+    unzip \
+    avahi-daemon \
+    libatlas-base-dev
 
 # -----------------------------------------------------------------------
-# 2. Docker
+# 2. Node.js LTS (for homebridge)
 # -----------------------------------------------------------------------
-if ! command -v docker &>/dev/null; then
-    info "Installing Docker..."
-    curl -fsSL https://get.docker.com | sh
-    usermod -aG docker "${RUN_USER}"
-    info "Docker installed. Note: log out and back in for group membership to take effect."
+if ! command -v node &>/dev/null; then
+    info "Installing Node.js LTS..."
+    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+    apt-get install -y nodejs
 else
-    info "Docker already installed, skipping."
-fi
-
-if ! command -v docker &>/dev/null; then
-    fatal "Docker installation failed."
-fi
-
-# Install docker-compose plugin if not present
-if ! docker compose version &>/dev/null 2>&1; then
-    info "Installing docker-compose plugin..."
-    apt-get install -y docker-compose-plugin
+    info "Node.js $(node --version) already installed, skipping."
 fi
 
 # -----------------------------------------------------------------------
-# 3. mediamtx
+# 3. homebridge + homebridge-camera-ffmpeg
+# -----------------------------------------------------------------------
+if ! command -v homebridge &>/dev/null; then
+    info "Installing homebridge and homebridge-camera-ffmpeg..."
+    npm install -g --unsafe-perm homebridge homebridge-camera-ffmpeg
+else
+    info "homebridge already installed, checking for plugin..."
+    npm list -g homebridge-camera-ffmpeg --depth=0 &>/dev/null || \
+        npm install -g --unsafe-perm homebridge-camera-ffmpeg
+fi
+
+# -----------------------------------------------------------------------
+# 4. mediamtx
 # -----------------------------------------------------------------------
 if [[ ! -f /usr/local/bin/mediamtx ]]; then
-    # Allow manual override: MEDIAMTX_VERSION=vX.Y.Z sudo bash install.sh
-    if [[ -z "${MEDIAMTX_VERSION:-}" ]]; then
+    if [[ -z "${MEDIAMTX_VERSION_OVERRIDE}" ]]; then
         info "Fetching latest mediamtx version from GitHub..."
         MEDIAMTX_VERSION="$(curl -fsSL \
             "https://api.github.com/repos/bluenviron/mediamtx/releases/latest" \
             | jq -r '.tag_name // empty')"
+    else
+        MEDIAMTX_VERSION="${MEDIAMTX_VERSION_OVERRIDE}"
     fi
 
-    # Validate — must look like vX.Y or vX.Y.Z
     if [[ ! "${MEDIAMTX_VERSION:-}" =~ ^v[0-9]+\.[0-9]+ ]]; then
         fatal "Could not determine mediamtx version (got: '${MEDIAMTX_VERSION:-}').
-       Set it manually: MEDIAMTX_VERSION=v1.9.1 sudo bash $0
-       Check available releases at: https://github.com/bluenviron/mediamtx/releases"
+       Set it manually: MEDIAMTX_VERSION=v1.19.0 sudo bash $0"
     fi
 
     TMP_DIR="$(mktemp -d)"
     trap 'rm -rf "${TMP_DIR}"' EXIT
 
-    # Try primary arch name, then fallback without 'v8' suffix (naming changed in some releases)
     for ARCH_SUFFIX in "${MEDIAMTX_ARCH}" "${MEDIAMTX_ARCH/arm64v8/arm64}"; do
         DOWNLOAD_URL="https://github.com/bluenviron/mediamtx/releases/download/${MEDIAMTX_VERSION}/mediamtx_${MEDIAMTX_VERSION}_${ARCH_SUFFIX}.tar.gz"
         info "Trying: ${DOWNLOAD_URL}"
@@ -93,52 +100,134 @@ if [[ ! -f /usr/local/bin/mediamtx ]]; then
 
     [[ -s "${TMP_DIR}/mediamtx.tar.gz" ]] || \
         fatal "Download failed for mediamtx ${MEDIAMTX_VERSION}.
-       Try: MEDIAMTX_VERSION=v1.9.1 sudo bash $0
-       Or browse releases: https://github.com/bluenviron/mediamtx/releases"
+       Try: MEDIAMTX_VERSION=v1.19.0 sudo bash $0"
 
     tar -xzf "${TMP_DIR}/mediamtx.tar.gz" -C "${TMP_DIR}"
     install -m 755 "${TMP_DIR}/mediamtx" /usr/local/bin/mediamtx
-    info "mediamtx ${MEDIAMTX_VERSION} installed (${ARCH_SUFFIX})."
+    info "mediamtx ${MEDIAMTX_VERSION} installed."
 else
     info "mediamtx already installed at /usr/local/bin/mediamtx, skipping."
 fi
 
 # -----------------------------------------------------------------------
-# 4. Project files
+# 5. Project files
 # -----------------------------------------------------------------------
-info "Copying project files to ${INSTALL_DIR}..."
-mkdir -p "${INSTALL_DIR}"
+info "Deploying project files to ${INSTALL_DIR}..."
+mkdir -p "${INSTALL_DIR}"/{src,models,homebridge}
 
-# docker-compose.yml — always update
-cp "${SRC_DIR}/docker-compose.yml" "${INSTALL_DIR}/"
+# Python sources
+cp -r "${SRC_DIR}/src/." "${INSTALL_DIR}/src/"
 
-# mediamtx.yml — only copy if not already customised
+# mediamtx config — only copy if not already customised
 if [[ ! -f "${INSTALL_DIR}/mediamtx.yml" ]]; then
     cp "${SRC_DIR}/mediamtx.yml" "${INSTALL_DIR}/"
+fi
+
+# app config — only copy if not already present
+if [[ ! -f "${INSTALL_DIR}/config.yaml" ]]; then
+    cp "${SRC_DIR}/config.yaml" "${INSTALL_DIR}/"
+fi
+
+# -----------------------------------------------------------------------
+# 6. TFLite detection model
+# -----------------------------------------------------------------------
+MODEL_PATH="${INSTALL_DIR}/models/detect.tflite"
+if [[ ! -f "${MODEL_PATH}" ]]; then
+    info "Downloading TFLite detection model..."
+    TMP_MODEL="$(mktemp -d)"
+    curl -fsSL "${TFLITE_MODEL_URL}" -o "${TMP_MODEL}/model.zip"
+    unzip -q "${TMP_MODEL}/model.zip" -d "${TMP_MODEL}/"
+    # The zip contains detect.tflite at various paths depending on the version
+    find "${TMP_MODEL}" -name "detect.tflite" | head -1 | xargs -I{} cp {} "${MODEL_PATH}"
+    rm -rf "${TMP_MODEL}"
+    info "TFLite model installed at ${MODEL_PATH}"
+else
+    info "TFLite model already present, skipping."
+fi
+
+# -----------------------------------------------------------------------
+# 7. Python virtual environment
+# -----------------------------------------------------------------------
+VENV="${INSTALL_DIR}/venv"
+if [[ ! -d "${VENV}" ]]; then
+    info "Creating Python virtual environment..."
+    # --system-site-packages gives access to apt-installed picamera2/libcamera
+    python3 -m venv --system-site-packages "${VENV}"
+fi
+"${VENV}/bin/pip" install --quiet --upgrade pip
+"${VENV}/bin/pip" install --quiet -r "${SRC_DIR}/requirements.txt"
+info "Python dependencies installed."
+
+# -----------------------------------------------------------------------
+# 8. homebridge config.json (generated with unique MAC + PIN)
+# -----------------------------------------------------------------------
+HB_CONFIG="${INSTALL_DIR}/homebridge/config.json"
+if [[ ! -f "${HB_CONFIG}" ]]; then
+    info "Generating homebridge config..."
+
+    # Random 6-byte MAC (locally administered, unicast)
+    MAC="$(python3 -c "
+import random
+mac = [random.randint(0,255) for _ in range(6)]
+mac[0] = (mac[0] & 0xFE) | 0x02   # locally administered, unicast
+print(':'.join(f'{b:02X}' for b in mac))
+")"
+
+    # Valid HomeKit PIN in format XXX-XX-XXX (avoid 000-00-000 etc.)
+    PIN="$(python3 -c "
+import random
+digits = [random.randint(0,9) for _ in range(8)]
+print(f'{''.join(str(d) for d in digits[:3])}-{''.join(str(d) for d in digits[3:5])}-{''.join(str(d) for d in digits[5:])}')
+")"
+
+    sed -e "s/__MAC__/${MAC}/" -e "s/__PIN__/${PIN}/" \
+        "${SRC_DIR}/homebridge/config.json" > "${HB_CONFIG}"
+    info "homebridge config written (PIN: ${PIN})"
+else
+    info "homebridge config already exists, preserving it."
+    # Extract PIN for display at the end
+    PIN="$(python3 -c "import json,sys; print(json.load(open('${HB_CONFIG}'))['bridge']['pin'])")"
 fi
 
 chown -R "${RUN_USER}:${RUN_USER}" "${INSTALL_DIR}"
 usermod -aG video "${RUN_USER}" || true
 
 # -----------------------------------------------------------------------
-# 5. mediamtx systemd service
+# 9. systemd services
 # -----------------------------------------------------------------------
-info "Installing mediamtx systemd service..."
+info "Installing systemd services..."
+
+# mediamtx
 sed "s/__USER__/${RUN_USER}/" "${SRC_DIR}/mediamtx.service" \
     > /etc/systemd/system/mediamtx.service
+
+# homebridge
+cat > /etc/systemd/system/homebridge.service << EOF
+[Unit]
+Description=Homebridge HomeKit bridge (+ homebridge-camera-ffmpeg HKSV)
+After=network-online.target avahi-daemon.service mediamtx.service pi4cam.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${RUN_USER}
+Environment=HOME=${INSTALL_DIR}/homebridge
+ExecStart=$(which homebridge) --no-interaction -U ${INSTALL_DIR}/homebridge -I
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# pi4cam Python service
+sed "s/__USER__/${RUN_USER}/" "${SRC_DIR}/pi4cam.service" \
+    > /etc/systemd/system/pi4cam.service
+
 systemctl daemon-reload
 systemctl enable --now mediamtx
-
-# -----------------------------------------------------------------------
-# 6. Scrypted (Docker)
-# -----------------------------------------------------------------------
-info "Starting Scrypted..."
-cd "${INSTALL_DIR}"
-docker compose pull --quiet
-docker compose up -d
-
-# Enable Scrypted to start on boot via Docker's own restart policy
-systemctl enable docker
+systemctl enable --now pi4cam
+systemctl enable --now homebridge
 
 # -----------------------------------------------------------------------
 # Done
@@ -149,21 +238,25 @@ echo ""
 echo "=========================================================="
 echo "  Installation complete!"
 echo ""
-echo "  RTSP stream:  rtsp://${LOCAL_IP}:8554/camera"
-echo "  Scrypted UI:  http://${LOCAL_IP}:11080"
+echo "  RTSP stream : rtsp://${LOCAL_IP}:8554/camera"
 echo ""
-echo "  Next steps:"
-echo "  1. Open Scrypted at the URL above"
-echo "  2. Create an account (local only)"
-echo "  3. Install plugins: HomeKit + OpenCV Object Detector"
-echo "     (or TensorFlow Lite Object Detector)"
-echo "  4. Add camera: Plugins → RTSP Camera"
-echo "     URL: rtsp://localhost:8554/camera"
-echo "  5. Enable HomeKit → camera appears in Apple Home"
-echo "  6. Enable HKSV in the camera's HomeKit settings"
-echo "  7. Configure person detection for smart notifications"
+echo "  ┌──────────────────────────────────┐"
+echo "  │  HomeKit pairing PIN: ${PIN}   │"
+echo "  └──────────────────────────────────┘"
 echo ""
-echo "  Logs:"
-echo "    mediamtx: journalctl -u mediamtx -f"
-echo "    Scrypted:  docker logs -f scrypted"
+echo "  Pour coupler la caméra :"
+echo "  1. Ouvre l'app Maison sur iPhone"
+echo "  2. Appuie sur + → Ajouter un accessoire"
+echo "  3. Choisis 'Code sans QR code'"
+echo "  4. Saisis le PIN affiché ci-dessus"
+echo "     (ou scanne le QR : journalctl -u homebridge | head -50)"
+echo ""
+echo "  Pour activer HKSV :"
+echo "  Maison → réglages caméra → Streaming et enregistrement"
+echo "  → choisir 'Activité détectée'"
+echo ""
+echo "  Logs :"
+echo "    mediamtx  : journalctl -u mediamtx -f"
+echo "    pi4cam    : journalctl -u pi4cam -f"
+echo "    homebridge: journalctl -u homebridge -f"
 echo "=========================================================="
