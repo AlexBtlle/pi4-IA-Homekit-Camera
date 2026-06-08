@@ -7,7 +7,13 @@ INSTALL_DIR="/opt/pi4cam"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_USER="${SUDO_USER:-pi}"
 
-MEDIAMTX_ARCH="linux_arm64v8"
+# Detect mediamtx arch suffix from host CPU
+case "$(uname -m)" in
+    aarch64) MEDIAMTX_ARCH="linux_arm64v8" ;;
+    armv7l)  MEDIAMTX_ARCH="linux_arm7"    ;;
+    x86_64)  MEDIAMTX_ARCH="linux_amd64"   ;;
+    *) fatal "Unsupported architecture: $(uname -m)" ;;
+esac
 
 # -----------------------------------------------------------------------
 # Helpers
@@ -57,23 +63,44 @@ fi
 # 3. mediamtx
 # -----------------------------------------------------------------------
 if [[ ! -f /usr/local/bin/mediamtx ]]; then
-    info "Downloading mediamtx..."
-    MEDIAMTX_VERSION="$(curl -fsSL \
-        https://api.github.com/repos/bluenviron/mediamtx/releases/latest \
-        | jq -r '.tag_name')"
-    [[ -n "${MEDIAMTX_VERSION}" ]] || fatal "Could not determine mediamtx version."
+    # Allow manual override: MEDIAMTX_VERSION=vX.Y.Z sudo bash install.sh
+    if [[ -z "${MEDIAMTX_VERSION:-}" ]]; then
+        info "Fetching latest mediamtx version from GitHub..."
+        MEDIAMTX_VERSION="$(curl -fsSL \
+            "https://api.github.com/repos/bluenviron/mediamtx/releases/latest" \
+            | jq -r '.tag_name // empty')"
+    fi
+
+    # Validate — must look like vX.Y or vX.Y.Z
+    if [[ ! "${MEDIAMTX_VERSION:-}" =~ ^v[0-9]+\.[0-9]+ ]]; then
+        fatal "Could not determine mediamtx version (got: '${MEDIAMTX_VERSION:-}').
+       Set it manually: MEDIAMTX_VERSION=v1.9.1 sudo bash $0
+       Check available releases at: https://github.com/bluenviron/mediamtx/releases"
+    fi
 
     TMP_DIR="$(mktemp -d)"
-    ARCHIVE="${MEDIAMTX_VERSION}_${MEDIAMTX_ARCH}.tar.gz"
-    curl -fsSL \
-        "https://github.com/bluenviron/mediamtx/releases/download/${MEDIAMTX_VERSION}/mediamtx_${ARCHIVE}" \
-        -o "${TMP_DIR}/mediamtx.tar.gz"
+    trap 'rm -rf "${TMP_DIR}"' EXIT
+
+    # Try primary arch name, then fallback without 'v8' suffix (naming changed in some releases)
+    for ARCH_SUFFIX in "${MEDIAMTX_ARCH}" "${MEDIAMTX_ARCH/arm64v8/arm64}"; do
+        DOWNLOAD_URL="https://github.com/bluenviron/mediamtx/releases/download/${MEDIAMTX_VERSION}/mediamtx_${MEDIAMTX_VERSION}_${ARCH_SUFFIX}.tar.gz"
+        info "Trying: ${DOWNLOAD_URL}"
+        if curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_DIR}/mediamtx.tar.gz" 2>/dev/null; then
+            break
+        fi
+        info "Not found, trying next arch variant..."
+    done
+
+    [[ -s "${TMP_DIR}/mediamtx.tar.gz" ]] || \
+        fatal "Download failed for mediamtx ${MEDIAMTX_VERSION}.
+       Try: MEDIAMTX_VERSION=v1.9.1 sudo bash $0
+       Or browse releases: https://github.com/bluenviron/mediamtx/releases"
+
     tar -xzf "${TMP_DIR}/mediamtx.tar.gz" -C "${TMP_DIR}"
     install -m 755 "${TMP_DIR}/mediamtx" /usr/local/bin/mediamtx
-    rm -rf "${TMP_DIR}"
-    info "mediamtx ${MEDIAMTX_VERSION} installed."
+    info "mediamtx ${MEDIAMTX_VERSION} installed (${ARCH_SUFFIX})."
 else
-    info "mediamtx already installed, skipping."
+    info "mediamtx already installed at /usr/local/bin/mediamtx, skipping."
 fi
 
 # -----------------------------------------------------------------------
