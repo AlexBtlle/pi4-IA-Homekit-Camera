@@ -34,24 +34,17 @@ paths:
     # Run rpicam-vid the moment mediamtx starts (not on-demand).
     # MTX_PATH and RTSP_PORT are injected by mediamtx as environment variables.
     # The command publishes its H264 output to mediamtx as an RTSP stream.
+    # mediamtx runs runOnInit WITHOUT a shell (it splits the string by
+    # spaces and execs the binary directly), so a bare '|' pipe is passed
+    # as arguments to rpicam-vid instead of creating a pipeline. We must
+    # explicitly invoke a shell with 'bash -c' so the '|' is interpreted.
+    # $MTX_PATH and $RTSP_PORT are exported into the environment by mediamtx.
     runOnInit: >-
-      rpicam-vid
-      --codec h264
-      --inline
-      --nopreview
-      --timeout 0
-      --width 1920
-      --height 1080
-      --framerate 30
-      -o - |
-      ffmpeg
-      -hide_banner
-      -loglevel warning
-      -f h264
-      -i pipe:0
-      -c:v copy
-      -f rtsp
-      rtsp://localhost:${RTSP_PORT}/${MTX_PATH}
+      bash -c "rpicam-vid --codec h264 --inline --nopreview --timeout 0
+      --width 1920 --height 1080 --framerate 30 -o - |
+      ffmpeg -hide_banner -loglevel warning -f h264 -i pipe:0
+      -c:v copy -rtsp_transport tcp -f rtsp
+      rtsp://localhost:$RTSP_PORT/$MTX_PATH"
 
     # Restart the camera process if it crashes
     runOnInitRestart: yes
