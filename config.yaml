@@ -1,0 +1,14 @@
+camera:
+  width: 1920
+  height: 1080
+  fps: 30
+  rotation: 0        # 0 | 90 | 180 | 270  (passed to rpicam-vid --rotation)
+  hflip: false
+  vflip: false
+
+rtsp:
+  port: 8554         # mediamtx RTSP port — keep in sync with mediamtx.yml
+
+scrypted:
+  port: 11080        # Scrypted web UI (HTTP)
+  https_port: 10443  # Scrypted web UI (HTTPS)
