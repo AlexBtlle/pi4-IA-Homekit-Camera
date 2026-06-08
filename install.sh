@@ -68,24 +68,37 @@ fi
 # -----------------------------------------------------------------------
 # 3. homebridge + homebridge-camera-ffmpeg
 # -----------------------------------------------------------------------
-# homebridge is pinned to the 1.8.x LTS line: homebridge-camera-ffmpeg's HKSV
+# homebridge is pinned to the 1.x LTS line: homebridge-camera-ffmpeg's HKSV
 # (HomeKit Secure Video) implementation was written against homebridge 1.x's
 # recording-delegate API. homebridge 2.x changed that API and HKSV silently
 # fails to register (the "Recording Options" menu never appears in Home).
 HOMEBRIDGE_PKG="homebridge@^1.8.0"
+# HKSV recording only exists in the 3.2.0 pre-release line of the plugin; the
+# 3.1.4 "stable" (npm "latest") has NO recording code and silently ignores
+# recording:true — so we must pin the beta explicitly.
+CAMERA_PKG="homebridge-camera-ffmpeg@3.2.0-beta.0"
+
 if ! command -v homebridge &>/dev/null; then
-    info "Installing homebridge (1.8.x) and homebridge-camera-ffmpeg..."
-    npm install -g --unsafe-perm "${HOMEBRIDGE_PKG}" homebridge-camera-ffmpeg
+    info "Installing ${HOMEBRIDGE_PKG} ..."
+    npm install -g --unsafe-perm "${HOMEBRIDGE_PKG}"
 else
     HB_MAJOR="$(homebridge --version 2>/dev/null | cut -d. -f1)"
     if [[ "${HB_MAJOR}" != "1" ]]; then
-        info "homebridge ${HB_MAJOR}.x detected — pinning to 1.8.x for HKSV..."
+        info "homebridge ${HB_MAJOR}.x detected — pinning to 1.x for HKSV..."
         npm install -g --unsafe-perm "${HOMEBRIDGE_PKG}"
     else
         info "homebridge $(homebridge --version) already installed, skipping."
     fi
-    npm list -g homebridge-camera-ffmpeg --depth=0 &>/dev/null || \
-        npm install -g --unsafe-perm homebridge-camera-ffmpeg
+fi
+
+# Ensure the HKSV-capable plugin version (not 3.1.4) is the one installed.
+CURRENT_CAM="$(npm list -g homebridge-camera-ffmpeg --depth=0 2>/dev/null \
+    | grep -o 'homebridge-camera-ffmpeg@[^ ]*' | cut -d@ -f2)"
+if [[ "${CURRENT_CAM}" != "3.2.0-beta.0" ]]; then
+    info "Installing ${CAMERA_PKG} (HKSV-capable) ..."
+    npm install -g --unsafe-perm "${CAMERA_PKG}"
+else
+    info "homebridge-camera-ffmpeg ${CURRENT_CAM} (HKSV) already installed."
 fi
 
 # -----------------------------------------------------------------------
