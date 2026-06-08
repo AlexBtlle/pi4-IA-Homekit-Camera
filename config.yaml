@@ -21,5 +21,15 @@ detection:
   mog2_history: 500
   mog2_var_threshold: 40
   min_motion_area: 1500
+  cooldown: 30               # seconds before re-triggering after a detection
+
+  # Person classification is handled by HomeKit Secure Video on the Apple TV /
+  # HomePod (Apple's on-device AI: People / Animals / Vehicles / Packages).
+  # The Pi just reports motion, which is reliable and low-cost.
+  #
+  # Set require_person: true to ALSO run a local MobileNet-SSD person filter
+  # before triggering (reduces Apple TV wake-ups, works without iCloud). It is
+  # off by default because the grayscale lores frame makes it unreliable.
+  require_person: false
   person_confidence: 0.55
-  cooldown: 60               # seconds before re-triggering after a detection
+  debug: false               # log motion area + person confidence for tuning

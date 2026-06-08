@@ -22,13 +22,16 @@ DNN_MEAN = 127.5
 
 class PresenceDetector:
     """
-    Background daemon thread: two-stage presence detection.
+    Background daemon thread: motion-based presence detection.
       Stage 1 — MOG2 background subtraction  (~2 ms, always on)
-      Stage 2 — TFLite MobileNet SSD person detection (~80 ms, only on motion)
+      Stage 2 — OpenCV DNN MobileNet-SSD person filter (optional, opt-in via
+                require_person; ~80 ms, only runs on motion)
 
-    On detection: HTTP GET to homebridge-camera-ffmpeg's porthttp endpoint,
+    On trigger: HTTP GET to homebridge-camera-ffmpeg's porthttp endpoint,
     which sets the HomeKit MotionSensor to true and triggers HKSV recording.
     homebridge resets the sensor automatically after motionTimeout seconds.
+    By default person/animal/vehicle classification is left to HomeKit Secure
+    Video on the home hub (Apple TV / HomePod).
     """
 
     WARMUP_FRAMES = 60
@@ -43,8 +46,11 @@ class PresenceDetector:
         self._mog2_shadows = bool(cfg.get("mog2_detect_shadows", False))
         self._min_area = int(cfg.get("min_motion_area", 1500))
         self._person_threshold = float(cfg.get("person_confidence", 0.55))
-        self._cooldown = float(cfg.get("cooldown", 60))
-        self._debug = bool(cfg.get("debug", True))
+        self._cooldown = float(cfg.get("cooldown", 30))
+        # Local person filter is optional; by default we trigger on motion and
+        # let HomeKit Secure Video classify person/animal/vehicle on the hub.
+        self._require_person = bool(cfg.get("require_person", False))
+        self._debug = bool(cfg.get("debug", False))
         self._last_diag = 0.0
 
         hb_cfg = config.get("homebridge", {})
@@ -88,9 +94,14 @@ class PresenceDetector:
             detectShadows=self._mog2_shadows,
         )
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        model_ok = self._load_model()
+        # Only load the DNN if a local person filter was explicitly requested.
+        model_ok = self._load_model() if self._require_person else False
         warmup = self.WARMUP_FRAMES
-        logger.info("Detection loop running (person detection: %s)", model_ok)
+        logger.info(
+            "Detection loop running (mode: %s)",
+            "motion + local person filter" if model_ok
+            else "motion-only — HKSV classifies on the hub",
+        )
 
         while not self._stop_event.is_set():
             frame = self._camera_manager.get_lores_frame(timeout=1.0)
@@ -117,28 +128,25 @@ class PresenceDetector:
             if now - self._last_trigger < self._cooldown:
                 continue
 
-            # Stage 2: DNN person detection (falls back to motion-only if no model)
+            # Stage 2 (optional): local person filter before triggering.
             if model_ok:
-                person_detected, best_conf = self._run_dnn(frame)
-            else:
-                person_detected, best_conf = True, 1.0
+                person, best_conf = self._run_dnn(frame)
+                if self._debug and now - self._last_diag >= 2.0:
+                    self._last_diag = now
+                    logger.info(
+                        "motion area=%d  person_conf=%.2f (thr=%.2f) → %s",
+                        int(max_area), best_conf, self._person_threshold,
+                        "PERSON" if person else "no person",
+                    )
+                if not person:
+                    continue
 
-            # Diagnostic line (throttled): shows whether stage 1 (motion) and
-            # stage 2 (person) agree, and the best person confidence seen.
-            if self._debug and now - self._last_diag >= 2.0:
-                self._last_diag = now
-                logger.info(
-                    "motion area=%d  person_conf=%.2f (thr=%.2f)  → %s",
-                    int(max_area), best_conf, self._person_threshold,
-                    "PERSON" if person_detected else "no person",
-                )
-
-            if person_detected:
-                self._last_trigger = now
-                logger.info("Person detected — sending motion webhook")
-                threading.Thread(
-                    target=self._send_webhook, daemon=True
-                ).start()
+            self._last_trigger = now
+            logger.info(
+                "Motion%s detected — sending webhook (area=%d)",
+                " + person" if model_ok else "", int(max_area),
+            )
+            threading.Thread(target=self._send_webhook, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Webhook
