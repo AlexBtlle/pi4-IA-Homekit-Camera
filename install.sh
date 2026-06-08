@@ -42,8 +42,13 @@ apt-get install -y \
     lsb-release \
     jq \
     unzip \
-    avahi-daemon \
-    libatlas-base-dev
+    avahi-daemon
+
+# libatlas provides BLAS for numpy on older Raspberry Pi OS releases.
+# It was removed in Debian Trixie (numpy/opencv wheels now bundle BLAS),
+# so install it best-effort and don't fail if it's unavailable.
+apt-get install -y libatlas-base-dev 2>/dev/null || \
+    info "libatlas-base-dev unavailable (Trixie+), skipping — not required."
 
 # -----------------------------------------------------------------------
 # 2. Node.js LTS (for homebridge)
