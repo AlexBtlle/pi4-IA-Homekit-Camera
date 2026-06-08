@@ -2,13 +2,24 @@ camera:
   width: 1920
   height: 1080
   fps: 30
-  rotation: 0        # 0 | 90 | 180 | 270  (passed to rpicam-vid --rotation)
+  bitrate: 4000000
+  rotation: 0        # 0 | 90 | 180 | 270
   hflip: false
   vflip: false
+  lores_width: 320
+  lores_height: 240
 
 rtsp:
-  port: 8554         # mediamtx RTSP port — keep in sync with mediamtx.yml
+  port: 8554         # mediamtx RTSP port
 
-scrypted:
-  port: 11080        # Scrypted web UI (HTTP)
-  https_port: 10443  # Scrypted web UI (HTTPS)
+homebridge:
+  camera_name: "Pi Camera"   # must match the name in homebridge config.json
+  porthttp: 8889             # homebridge-camera-ffmpeg HTTP motion trigger port
+
+detection:
+  enabled: true
+  mog2_history: 500
+  mog2_var_threshold: 40
+  min_motion_area: 1500
+  person_confidence: 0.55
+  cooldown: 60               # seconds before re-triggering after a detection
