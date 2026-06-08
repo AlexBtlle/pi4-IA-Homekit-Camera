@@ -44,6 +44,8 @@ class PresenceDetector:
         self._min_area = int(cfg.get("min_motion_area", 1500))
         self._person_threshold = float(cfg.get("person_confidence", 0.55))
         self._cooldown = float(cfg.get("cooldown", 60))
+        self._debug = bool(cfg.get("debug", True))
+        self._last_diag = 0.0
 
         hb_cfg = config.get("homebridge", {})
         porthttp = int(hb_cfg.get("porthttp", 8889))
@@ -106,7 +108,8 @@ class PresenceDetector:
             contours, _ = cv2.findContours(
                 fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
             )
-            if not any(cv2.contourArea(c) >= self._min_area for c in contours):
+            max_area = max((cv2.contourArea(c) for c in contours), default=0)
+            if max_area < self._min_area:
                 continue
 
             # Cooldown gate
@@ -115,7 +118,20 @@ class PresenceDetector:
                 continue
 
             # Stage 2: DNN person detection (falls back to motion-only if no model)
-            person_detected = self._run_dnn(frame) if model_ok else True
+            if model_ok:
+                person_detected, best_conf = self._run_dnn(frame)
+            else:
+                person_detected, best_conf = True, 1.0
+
+            # Diagnostic line (throttled): shows whether stage 1 (motion) and
+            # stage 2 (person) agree, and the best person confidence seen.
+            if self._debug and now - self._last_diag >= 2.0:
+                self._last_diag = now
+                logger.info(
+                    "motion area=%d  person_conf=%.2f (thr=%.2f)  → %s",
+                    int(max_area), best_conf, self._person_threshold,
+                    "PERSON" if person_detected else "no person",
+                )
 
             if person_detected:
                 self._last_trigger = now
@@ -165,7 +181,8 @@ class PresenceDetector:
                 return os.path.abspath(proto), os.path.abspath(model)
         return None, None
 
-    def _run_dnn(self, y_frame: np.ndarray) -> bool:
+    def _run_dnn(self, y_frame: np.ndarray) -> tuple[bool, float]:
+        """Returns (person_above_threshold, best_person_confidence)."""
         # The model expects 3-channel BGR input; our lores frame is the Y
         # (luma) plane, so replicate it across the three channels.
         bgr = cv2.cvtColor(y_frame, cv2.COLOR_GRAY2BGR)
@@ -175,10 +192,10 @@ class PresenceDetector:
         self._net.setInput(blob)
         detections = self._net.forward()  # shape (1, 1, N, 7)
 
+        best_conf = 0.0
         for i in range(detections.shape[2]):
             class_id = int(detections[0, 0, i, 1])
             confidence = float(detections[0, 0, i, 2])
-            if class_id == PERSON_CLASS_ID and confidence >= self._person_threshold:
-                logger.debug("Person confidence=%.2f", confidence)
-                return True
-        return False
+            if class_id == PERSON_CLASS_ID:
+                best_conf = max(best_conf, confidence)
+        return best_conf >= self._person_threshold, best_conf
