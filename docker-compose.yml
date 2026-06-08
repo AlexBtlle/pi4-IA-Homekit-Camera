@@ -1,0 +1,35 @@
+services:
+  scrypted:
+    image: ghcr.io/koush/scrypted:latest
+    container_name: scrypted
+    restart: unless-stopped
+
+    # Host networking so Scrypted can reach mediamtx on localhost:8554
+    # and announce itself on the LAN for HomeKit mDNS discovery
+    network_mode: host
+
+    volumes:
+      # Persist Scrypted data (plugins, pairing info, recordings index)
+      - scrypted_data:/server/volume
+
+    devices:
+      # V4L2 hardware-accelerated H264 decode/encode on Pi 4
+      - /dev/video10:/dev/video10
+      - /dev/video11:/dev/video11
+      - /dev/video12:/dev/video12
+      # DRM/KMS for GPU memory operations
+      - /dev/dri:/dev/dri
+
+    environment:
+      # Disable automatic HTTPS redirect so the web UI is reachable over HTTP
+      # on the local network during initial setup
+      - SCRYPTED_INSECURE_ADDON_REPOSITORY=true
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  scrypted_data:
