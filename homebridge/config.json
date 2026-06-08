@@ -15,6 +15,7 @@
       "cameras": [
         {
           "name": "Pi Camera",
+          "unbridge": true,
           "videoConfig": {
             "source": "-rtsp_transport tcp -i rtsp://localhost:8554/camera",
             "stillImageSource": "-rtsp_transport tcp -i rtsp://localhost:8554/camera",
