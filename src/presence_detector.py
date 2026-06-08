@@ -12,7 +12,12 @@ from .camera_manager import CameraManager
 
 logger = logging.getLogger(__name__)
 
-PERSON_CLASS_ID = 0  # COCO label 0 = person in MobileNet SSD v1
+# MobileNet-SSD (Caffe, trained on Pascal VOC) — class index 15 = person.
+# Run via OpenCV's DNN module: no fragile ML runtime to install, only opencv.
+PERSON_CLASS_ID = 15
+DNN_INPUT_SIZE = 300
+DNN_SCALE = 0.007843     # 1 / 127.5
+DNN_MEAN = 127.5
 
 
 class PresenceDetector:
@@ -52,11 +57,7 @@ class PresenceDetector:
 
         self._stop_event = threading.Event()
         self._last_trigger = 0.0
-        self._interpreter = None
-        self._input_details = None
-        self._output_details = None
-        self._input_w = 300
-        self._input_h = 300
+        self._net = None  # cv2.dnn network (loaded in the worker thread)
 
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="presence-detector"
@@ -85,7 +86,7 @@ class PresenceDetector:
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         model_ok = self._load_model()
         warmup = self.WARMUP_FRAMES
-        logger.info("Detection loop running (TFLite: %s)", model_ok)
+        logger.info("Detection loop running (person detection: %s)", model_ok)
 
         while not self._stop_event.is_set():
             frame = self._camera_manager.get_lores_frame(timeout=1.0)
@@ -111,8 +112,8 @@ class PresenceDetector:
             if now - self._last_trigger < self._cooldown:
                 continue
 
-            # Stage 2: TFLite person detection
-            person_detected = self._run_tflite(frame) if model_ok else True
+            # Stage 2: DNN person detection (falls back to motion-only if no model)
+            person_detected = self._run_dnn(frame) if model_ok else True
 
             if person_detected:
                 self._last_trigger = now
@@ -133,58 +134,49 @@ class PresenceDetector:
             logger.warning("Motion webhook failed", exc_info=True)
 
     # ------------------------------------------------------------------
-    # TFLite
+    # OpenCV DNN — MobileNet-SSD person detection
     # ------------------------------------------------------------------
 
     def _load_model(self) -> bool:
-        try:
-            from tflite_runtime.interpreter import Interpreter
-        except ImportError:
-            logger.warning("tflite_runtime not installed — stage 2 disabled")
-            return False
-
-        model_path = self._find_model()
-        if not model_path:
-            logger.warning("detect.tflite not found — stage 2 disabled")
+        prototxt, caffemodel = self._find_model()
+        if not (prototxt and caffemodel):
+            logger.warning("MobileNet-SSD model files not found — stage 2 disabled")
             return False
 
         try:
-            self._interpreter = Interpreter(model_path=model_path)
-            self._interpreter.allocate_tensors()
-            self._input_details = self._interpreter.get_input_details()
-            self._output_details = self._interpreter.get_output_details()
-            self._input_h = self._input_details[0]["shape"][1]
-            self._input_w = self._input_details[0]["shape"][2]
-            logger.info("TFLite model loaded: %s (%dx%d)", model_path,
-                        self._input_w, self._input_h)
+            self._net = cv2.dnn.readNetFromCaffe(prototxt, caffemodel)
+            logger.info("MobileNet-SSD loaded via OpenCV DNN: %s", caffemodel)
             return True
         except Exception:
-            logger.exception("Failed to load TFLite model")
+            logger.exception("Failed to load MobileNet-SSD model")
             return False
 
-    def _find_model(self) -> str | None:
-        candidates = [
-            os.path.join(os.path.dirname(__file__), "..", "models", "detect.tflite"),
-            "/opt/pi4cam/models/detect.tflite",
+    def _find_model(self) -> tuple[str | None, str | None]:
+        dirs = [
+            os.path.join(os.path.dirname(__file__), "..", "models"),
+            "/opt/pi4cam/models",
         ]
-        for path in candidates:
-            if os.path.isfile(path):
-                return os.path.abspath(path)
-        return None
+        for d in dirs:
+            proto = os.path.join(d, "MobileNetSSD_deploy.prototxt")
+            model = os.path.join(d, "MobileNetSSD_deploy.caffemodel")
+            if os.path.isfile(proto) and os.path.isfile(model):
+                return os.path.abspath(proto), os.path.abspath(model)
+        return None, None
 
-    def _run_tflite(self, y_frame: np.ndarray) -> bool:
-        resized = cv2.resize(y_frame, (self._input_w, self._input_h))
-        rgb = np.stack([resized, resized, resized], axis=-1)[np.newaxis]
+    def _run_dnn(self, y_frame: np.ndarray) -> bool:
+        # The model expects 3-channel BGR input; our lores frame is the Y
+        # (luma) plane, so replicate it across the three channels.
+        bgr = cv2.cvtColor(y_frame, cv2.COLOR_GRAY2BGR)
+        blob = cv2.dnn.blobFromImage(
+            bgr, DNN_SCALE, (DNN_INPUT_SIZE, DNN_INPUT_SIZE), DNN_MEAN
+        )
+        self._net.setInput(blob)
+        detections = self._net.forward()  # shape (1, 1, N, 7)
 
-        self._interpreter.set_tensor(self._input_details[0]["index"], rgb)
-        self._interpreter.invoke()
-
-        classes = self._interpreter.get_tensor(self._output_details[1]["index"])[0]
-        scores  = self._interpreter.get_tensor(self._output_details[2]["index"])[0]
-        num     = int(self._interpreter.get_tensor(self._output_details[3]["index"])[0])
-
-        for i in range(num):
-            if int(classes[i]) == PERSON_CLASS_ID and float(scores[i]) >= self._person_threshold:
-                logger.debug("Person score=%.2f", scores[i])
+        for i in range(detections.shape[2]):
+            class_id = int(detections[0, 0, i, 1])
+            confidence = float(detections[0, 0, i, 2])
+            if class_id == PERSON_CLASS_ID and confidence >= self._person_threshold:
+                logger.debug("Person confidence=%.2f", confidence)
                 return True
         return False
