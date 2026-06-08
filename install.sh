@@ -8,7 +8,11 @@ SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_USER="${SUDO_USER:-pi}"
 
 MEDIAMTX_VERSION_OVERRIDE="${MEDIAMTX_VERSION:-}"
-TFLITE_MODEL_URL="https://storage.googleapis.com/download.tensorflow.org/models/tflite/coco_ssd_mobilenet_v1_1.0_quant_2018_06_29.zip"
+# MobileNet-SSD (Caffe) for OpenCV DNN person detection — committed directly
+# in this repo (not behind a Google Drive link), so it is curl-able and stable.
+DNN_BASE_URL="https://raw.githubusercontent.com/djmv/MobilNet_SSD_opencv/master"
+DNN_PROTOTXT_URL="${DNN_BASE_URL}/MobileNetSSD_deploy.prototxt"
+DNN_CAFFEMODEL_URL="${DNN_BASE_URL}/MobileNetSSD_deploy.caffemodel"
 
 case "$(uname -m)" in
     aarch64) MEDIAMTX_ARCH="linux_arm64v8" ;;
@@ -33,6 +37,8 @@ apt-get update -qq
 apt-get install -y \
     python3-picamera2 \
     python3-libcamera \
+    python3-numpy \
+    python3-opencv \
     python3-venv \
     ffmpeg \
     rpicam-apps \
@@ -41,14 +47,12 @@ apt-get install -y \
     gnupg \
     lsb-release \
     jq \
-    unzip \
     avahi-daemon
 
-# libatlas provides BLAS for numpy on older Raspberry Pi OS releases.
-# It was removed in Debian Trixie (numpy/opencv wheels now bundle BLAS),
-# so install it best-effort and don't fail if it's unavailable.
-apt-get install -y libatlas-base-dev 2>/dev/null || \
-    info "libatlas-base-dev unavailable (Trixie+), skipping — not required."
+# numpy and opencv (cv2) come from apt above — prebuilt pip wheels are
+# unreliable across Raspberry Pi OS / Python versions. The venv accesses
+# them via --system-site-packages. No fragile ML runtime (tflite) needed:
+# person detection runs through OpenCV's built-in DNN module.
 
 # -----------------------------------------------------------------------
 # 2. Node.js LTS (for homebridge)
@@ -134,20 +138,22 @@ if [[ ! -f "${INSTALL_DIR}/config.yaml" ]]; then
 fi
 
 # -----------------------------------------------------------------------
-# 6. TFLite detection model
+# 6. MobileNet-SSD detection model (OpenCV DNN)
 # -----------------------------------------------------------------------
-MODEL_PATH="${INSTALL_DIR}/models/detect.tflite"
-if [[ ! -f "${MODEL_PATH}" ]]; then
-    info "Downloading TFLite detection model..."
-    TMP_MODEL="$(mktemp -d)"
-    curl -fsSL "${TFLITE_MODEL_URL}" -o "${TMP_MODEL}/model.zip"
-    unzip -q "${TMP_MODEL}/model.zip" -d "${TMP_MODEL}/"
-    # The zip contains detect.tflite at various paths depending on the version
-    find "${TMP_MODEL}" -name "detect.tflite" | head -1 | xargs -I{} cp {} "${MODEL_PATH}"
-    rm -rf "${TMP_MODEL}"
-    info "TFLite model installed at ${MODEL_PATH}"
+PROTOTXT_PATH="${INSTALL_DIR}/models/MobileNetSSD_deploy.prototxt"
+CAFFEMODEL_PATH="${INSTALL_DIR}/models/MobileNetSSD_deploy.caffemodel"
+if [[ ! -f "${CAFFEMODEL_PATH}" ]]; then
+    info "Downloading MobileNet-SSD detection model..."
+    curl -fsSL "${DNN_PROTOTXT_URL}"   -o "${PROTOTXT_PATH}"
+    curl -fsSL "${DNN_CAFFEMODEL_URL}" -o "${CAFFEMODEL_PATH}"
+    # Sanity check: caffemodel must be a real binary (~23 MB), not an HTML 404
+    if [[ ! -s "${CAFFEMODEL_PATH}" ]] || [[ "$(stat -c%s "${CAFFEMODEL_PATH}")" -lt 1000000 ]]; then
+        rm -f "${CAFFEMODEL_PATH}"
+        fatal "MobileNet-SSD model download failed or incomplete."
+    fi
+    info "MobileNet-SSD model installed."
 else
-    info "TFLite model already present, skipping."
+    info "MobileNet-SSD model already present, skipping."
 fi
 
 # -----------------------------------------------------------------------
