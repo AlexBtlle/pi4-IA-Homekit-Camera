@@ -48,11 +48,13 @@ class PresenceDetector:
         hb_cfg = config.get("homebridge", {})
         porthttp = int(hb_cfg.get("porthttp", 8889))
         camera_name = hb_cfg.get("camera_name", "Pi Camera")
-        # homebridge-camera-ffmpeg HTTP motion trigger:
-        # GET http://localhost:<porthttp>/<camera-name>?motion=true
+        # homebridge-camera-ffmpeg HTTP motion trigger. The endpoint is
+        # /motion with the camera name as the (URL-encoded) query string:
+        # GET http://localhost:<porthttp>/motion?<camera-name>
+        # → {"error":false,"message":"Motion switched on."}
         self._webhook_url = (
-            f"http://localhost:{porthttp}/"
-            f"{urllib.parse.quote(camera_name)}?motion=true"
+            f"http://localhost:{porthttp}/motion?"
+            f"{urllib.parse.quote(camera_name)}"
         )
 
         self._stop_event = threading.Event()
