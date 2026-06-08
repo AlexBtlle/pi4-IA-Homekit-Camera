@@ -23,10 +23,10 @@
             "maxHeight": 1080,
             "maxFPS": 30,
             "maxBitrate": 4000,
-            "vcodec": "copy"
+            "vcodec": "copy",
+            "recording": true,
+            "prebuffer": true
           },
-          "recording": true,
-          "prebuffer": true,
           "motion": true,
           "motionTimeout": 10
         }
