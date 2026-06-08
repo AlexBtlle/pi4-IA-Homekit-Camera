@@ -223,7 +223,7 @@ Wants=network-online.target
 Type=simple
 User=${RUN_USER}
 Environment=HOME=${INSTALL_DIR}/homebridge
-ExecStart=$(which homebridge) --no-interaction -U ${INSTALL_DIR}/homebridge -I
+ExecStart=$(which homebridge) -U ${INSTALL_DIR}/homebridge -I
 Restart=on-failure
 RestartSec=5
 
