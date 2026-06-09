@@ -32,6 +32,17 @@ fatal() { echo "ERROR: $*" >&2; exit 1; }
 # -----------------------------------------------------------------------
 # 1. System packages
 # -----------------------------------------------------------------------
+# Heal a half-removed NodeSource repo first: if the apt source still points at
+# a keyring that no longer exists (left over from a previous uninstall), every
+# `apt-get update` fails for ALL repos. Drop the stale source — step 2 re-adds
+# it cleanly with a fresh keyring.
+if [[ -f /etc/apt/sources.list.d/nodesource.list ]] \
+   && [[ ! -f /usr/share/keyrings/nodesource.gpg ]] \
+   && [[ ! -f /etc/apt/keyrings/nodesource.gpg ]]; then
+    info "Removing stale NodeSource apt source (its keyring is missing)..."
+    rm -f /etc/apt/sources.list.d/nodesource.list
+fi
+
 info "Installing system packages..."
 apt-get update -qq
 apt-get install -y \
