@@ -55,55 +55,21 @@ apt-get install -y \
 # person detection runs through OpenCV's built-in DNN module.
 
 # -----------------------------------------------------------------------
-# 2. Node.js 22 (for homebridge)
+# 2. Node.js 22 (for the HAP-NodeJS HomeKit app)
 # -----------------------------------------------------------------------
-# Pinned to Node 22: the homebridge-camera-ffmpeg HKSV beta (3.2.0-beta.0)
-# only supports node ^20 || ^22. On Node 24 its compiled ESM imports fail
-# ("Cannot find module .../dist/logger") and the whole plugin refuses to load.
+# Pinned to Node 22 LTS: hap-nodejs targets active LTS lines. We install from
+# the NodeSource apt repo, removing any stale repo file first so a previously
+# configured node_24 repo can't override the node_22 pin (the exact trap that
+# blocked v1: apt kept Node 24 because the old repo list still had priority).
 NODE_MAJOR=22
 CURRENT_NODE_MAJOR="$(node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/')"
 if [[ "${CURRENT_NODE_MAJOR}" != "${NODE_MAJOR}" ]]; then
     info "Installing Node.js ${NODE_MAJOR}.x (current: ${CURRENT_NODE_MAJOR:-none})..."
+    rm -f /etc/apt/sources.list.d/nodesource.list
     curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
-    apt-get install -y nodejs
+    apt-get install -y --allow-downgrades nodejs
 else
     info "Node.js $(node --version) already installed, skipping."
-fi
-
-# -----------------------------------------------------------------------
-# 3. homebridge + homebridge-camera-ffmpeg
-# -----------------------------------------------------------------------
-# homebridge is pinned to the 1.x LTS line: homebridge-camera-ffmpeg's HKSV
-# (HomeKit Secure Video) implementation was written against homebridge 1.x's
-# recording-delegate API. homebridge 2.x changed that API and HKSV silently
-# fails to register (the "Recording Options" menu never appears in Home).
-HOMEBRIDGE_PKG="homebridge@^1.8.0"
-# HKSV recording only exists in the 3.2.0 pre-release line of the plugin; the
-# 3.1.4 "stable" (npm "latest") has NO recording code and silently ignores
-# recording:true — so we must pin the beta explicitly.
-CAMERA_PKG="homebridge-camera-ffmpeg@3.2.0-beta.0"
-
-if ! command -v homebridge &>/dev/null; then
-    info "Installing ${HOMEBRIDGE_PKG} ..."
-    npm install -g --unsafe-perm "${HOMEBRIDGE_PKG}"
-else
-    HB_MAJOR="$(homebridge --version 2>/dev/null | cut -d. -f1)"
-    if [[ "${HB_MAJOR}" != "1" ]]; then
-        info "homebridge ${HB_MAJOR}.x detected — pinning to 1.x for HKSV..."
-        npm install -g --unsafe-perm "${HOMEBRIDGE_PKG}"
-    else
-        info "homebridge $(homebridge --version) already installed, skipping."
-    fi
-fi
-
-# Ensure the HKSV-capable plugin version (not 3.1.4) is the one installed.
-CURRENT_CAM="$(npm list -g homebridge-camera-ffmpeg --depth=0 2>/dev/null \
-    | grep -o 'homebridge-camera-ffmpeg@[^ ]*' | cut -d@ -f2)"
-if [[ "${CURRENT_CAM}" != "3.2.0-beta.0" ]]; then
-    info "Installing ${CAMERA_PKG} (HKSV-capable) ..."
-    npm install -g --unsafe-perm "${CAMERA_PKG}"
-else
-    info "homebridge-camera-ffmpeg ${CURRENT_CAM} (HKSV) already installed."
 fi
 
 # -----------------------------------------------------------------------
@@ -151,10 +117,18 @@ fi
 # 5. Project files
 # -----------------------------------------------------------------------
 info "Deploying project files to ${INSTALL_DIR}..."
-mkdir -p "${INSTALL_DIR}"/{src,models,homebridge}
+mkdir -p "${INSTALL_DIR}"/{camera,models,homekit}
 
-# Python sources
-cp -r "${SRC_DIR}/src/." "${INSTALL_DIR}/src/"
+# Python sources (the camera pipeline + detection)
+cp -r "${SRC_DIR}/camera/." "${INSTALL_DIR}/camera/"
+
+# HomeKit app sources (build happens in step 8, below). Copy package files and
+# the TypeScript sources; node_modules/dist/pairing.json are produced on-box.
+cp "${SRC_DIR}/homekit/package.json" \
+   "${SRC_DIR}/homekit/package-lock.json" \
+   "${SRC_DIR}/homekit/tsconfig.json" \
+   "${INSTALL_DIR}/homekit/"
+cp -r "${SRC_DIR}/homekit/src" "${INSTALL_DIR}/homekit/"
 
 # mediamtx config — only copy if not already customised
 if [[ ! -f "${INSTALL_DIR}/mediamtx.yml" ]]; then
@@ -199,34 +173,50 @@ fi
 info "Python dependencies installed."
 
 # -----------------------------------------------------------------------
-# 8. homebridge config.json (generated with unique MAC + PIN)
+# 8. HomeKit app: build + pairing secrets (unique MAC + PIN + setup ID)
 # -----------------------------------------------------------------------
-HB_CONFIG="${INSTALL_DIR}/homebridge/config.json"
-if [[ ! -f "${HB_CONFIG}" ]]; then
-    info "Generating homebridge config..."
+info "Building the HomeKit app (npm ci + tsc)..."
+pushd "${INSTALL_DIR}/homekit" >/dev/null
+if [[ -f package-lock.json ]]; then
+    npm ci --no-audit --no-fund
+else
+    npm install --no-audit --no-fund
+fi
+npm run build
+popd >/dev/null
 
-    # Random 6-byte MAC (locally administered, unicast)
-    MAC="$(python3 -c "
-import random
-mac = [random.randint(0,255) for _ in range(6)]
-mac[0] = (mac[0] & 0xFE) | 0x02   # locally administered, unicast
-print(':'.join(f'{b:02X}' for b in mac))
-")"
-
-    # Valid HomeKit PIN in format XXX-XX-XXX (avoid 000-00-000 etc.)
+# Pairing secrets — generated once, then preserved across re-runs so the
+# camera keeps its identity (re-pairing not required after an update).
+PAIRING="${INSTALL_DIR}/homekit/pairing.json"
+if [[ ! -f "${PAIRING}" ]]; then
+    info "Generating HomeKit pairing secrets..."
     PIN="$(python3 -c "
 import random
-digits = [random.randint(0,9) for _ in range(8)]
-print(f'{''.join(str(d) for d in digits[:3])}-{''.join(str(d) for d in digits[3:5])}-{''.join(str(d) for d in digits[5:])}')
+d = [random.randint(0,9) for _ in range(8)]
+print(f\"{''.join(map(str,d[:3]))}-{''.join(map(str,d[3:5]))}-{''.join(map(str,d[5:]))}\")
 ")"
-
-    sed -e "s/__MAC__/${MAC}/" -e "s/__PIN__/${PIN}/" \
-        "${SRC_DIR}/homebridge/config.json" > "${HB_CONFIG}"
-    info "homebridge config written (PIN: ${PIN})"
+    MAC="$(python3 -c "
+import random
+m = [random.randint(0,255) for _ in range(6)]
+m[0] = (m[0] & 0xFE) | 0x02   # locally administered, unicast
+print(':'.join(f'{b:02X}' for b in m))
+")"
+    SETUP_ID="$(python3 -c "
+import random, string
+print(''.join(random.choices(string.ascii_uppercase + string.digits, k=4)))
+")"
+    cat > "${PAIRING}" <<EOF
+{
+  "username": "${MAC}",
+  "pincode": "${PIN}",
+  "setupID": "${SETUP_ID}"
+}
+EOF
+    chmod 600 "${PAIRING}"
+    info "Pairing secrets written (PIN: ${PIN})"
 else
-    info "homebridge config already exists, preserving it."
-    # Extract PIN for display at the end
-    PIN="$(python3 -c "import json,sys; print(json.load(open('${HB_CONFIG}'))['bridge']['pin'])")"
+    info "Pairing secrets already exist, preserving them."
+    PIN="$(python3 -c "import json; print(json.load(open('${PAIRING}'))['pincode'])")"
 fi
 
 chown -R "${RUN_USER}:${RUN_USER}" "${INSTALL_DIR}"
@@ -241,33 +231,18 @@ info "Installing systemd services..."
 sed "s/__USER__/${RUN_USER}/" "${SRC_DIR}/mediamtx.service" \
     > /etc/systemd/system/mediamtx.service
 
-# homebridge
-cat > /etc/systemd/system/homebridge.service << EOF
-[Unit]
-Description=Homebridge HomeKit bridge (+ homebridge-camera-ffmpeg HKSV)
-After=network-online.target avahi-daemon.service mediamtx.service pi4cam.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=${RUN_USER}
-Environment=HOME=${INSTALL_DIR}/homebridge
-ExecStart=$(which homebridge) -U ${INSTALL_DIR}/homebridge -I
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# pi4cam Python service
+# pi4cam Python service (camera pipeline + detection)
 sed "s/__USER__/${RUN_USER}/" "${SRC_DIR}/pi4cam.service" \
     > /etc/systemd/system/pi4cam.service
+
+# pi4cam HomeKit app (HAP-NodeJS)
+sed "s/__USER__/${RUN_USER}/" "${SRC_DIR}/pi4cam-homekit.service" \
+    > /etc/systemd/system/pi4cam-homekit.service
 
 systemctl daemon-reload
 systemctl enable --now mediamtx
 systemctl enable --now pi4cam
-systemctl enable --now homebridge
+systemctl enable --now pi4cam-homekit
 
 # -----------------------------------------------------------------------
 # Done
@@ -287,16 +262,16 @@ echo ""
 echo "  Pour coupler la caméra :"
 echo "  1. Ouvre l'app Maison sur iPhone"
 echo "  2. Appuie sur + → Ajouter un accessoire"
-echo "  3. Choisis 'Code sans QR code'"
-echo "  4. Saisis le PIN affiché ci-dessus"
-echo "     (ou scanne le QR : journalctl -u homebridge | head -50)"
+echo "  3. Scanne le QR code affiché par l'app HomeKit :"
+echo "       journalctl -u pi4cam-homekit -b | head -40"
+echo "     (ou 'Plus d'options…' → saisis le PIN ci-dessus)"
 echo ""
-echo "  Pour activer HKSV :"
-echo "  Maison → réglages caméra → Streaming et enregistrement"
-echo "  → choisir 'Activité détectée'"
+echo "  Pour activer HKSV (enregistrement iCloud) :"
+echo "  Maison → réglages caméra → Options d'enregistrement"
+echo "  → 'Enregistrer le flux' + activité Personnes / Animaux"
 echo ""
 echo "  Logs :"
-echo "    mediamtx  : journalctl -u mediamtx -f"
-echo "    pi4cam    : journalctl -u pi4cam -f"
-echo "    homebridge: journalctl -u homebridge -f"
+echo "    mediamtx       : journalctl -u mediamtx -f"
+echo "    pi4cam         : journalctl -u pi4cam -f"
+echo "    pi4cam-homekit : journalctl -u pi4cam-homekit -f"
 echo "=========================================================="

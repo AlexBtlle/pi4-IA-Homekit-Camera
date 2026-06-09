@@ -1,8 +1,8 @@
+import json
 import logging
 import os
 import threading
 import time
-import urllib.parse
 import urllib.request
 
 import cv2
@@ -27,9 +27,9 @@ class PresenceDetector:
       Stage 2 — OpenCV DNN MobileNet-SSD person filter (optional, opt-in via
                 require_person; ~80 ms, only runs on motion)
 
-    On trigger: HTTP GET to homebridge-camera-ffmpeg's porthttp endpoint,
-    which sets the HomeKit MotionSensor to true and triggers HKSV recording.
-    homebridge resets the sensor automatically after motionTimeout seconds.
+    On trigger: HTTP POST to the local HomeKit app's motion endpoint, which
+    sets the HomeKit MotionSensor to true and arms HKSV recording. The app
+    resets the sensor automatically after its motion timeout.
     By default person/animal/vehicle classification is left to HomeKit Secure
     Video on the home hub (Apple TV / HomePod).
     """
@@ -53,17 +53,12 @@ class PresenceDetector:
         self._debug = bool(cfg.get("debug", False))
         self._last_diag = 0.0
 
-        hb_cfg = config.get("homebridge", {})
-        porthttp = int(hb_cfg.get("porthttp", 8889))
-        camera_name = hb_cfg.get("camera_name", "Pi Camera")
-        # homebridge-camera-ffmpeg HTTP motion trigger. The endpoint is
-        # /motion with the camera name as the (URL-encoded) query string:
-        # GET http://localhost:<porthttp>/motion?<camera-name>
-        # → {"error":false,"message":"Motion switched on."}
-        self._webhook_url = (
-            f"http://localhost:{porthttp}/motion?"
-            f"{urllib.parse.quote(camera_name)}"
-        )
+        hk_cfg = config.get("homekit", {})
+        motion_port = int(hk_cfg.get("motion_port", 8989))
+        # Our HAP-NodeJS app exposes a tiny motion endpoint on localhost:
+        #   POST http://localhost:<motion_port>/motion
+        # → triggers the HomeKit MotionSensor and arms HKSV recording.
+        self._webhook_url = f"http://localhost:{motion_port}/motion"
 
         self._stop_event = threading.Event()
         self._last_trigger = 0.0
@@ -154,7 +149,14 @@ class PresenceDetector:
 
     def _send_webhook(self) -> None:
         try:
-            urllib.request.urlopen(self._webhook_url, timeout=2)
+            payload = json.dumps({"source": "pi4cam"}).encode()
+            req = urllib.request.Request(
+                self._webhook_url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=2)
             logger.debug("Motion webhook OK")
         except Exception:
             logger.warning("Motion webhook failed", exc_info=True)

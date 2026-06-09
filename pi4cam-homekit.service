@@ -1,0 +1,18 @@
+[Unit]
+Description=pi4cam HomeKit — HAP-NodeJS camera (live stream + motion + HKSV)
+After=network-online.target avahi-daemon.service mediamtx.service pi4cam.service
+Wants=network-online.target
+# The camera pipeline must be publishing to mediamtx before we serve HomeKit.
+Requires=mediamtx.service
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=/opt/pi4cam/homekit
+ExecStart=/usr/bin/node /opt/pi4cam/homekit/dist/main.js
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

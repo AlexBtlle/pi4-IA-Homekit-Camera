@@ -7,9 +7,8 @@ logDestinations: [stdout]
 rtspTransports: [tcp]
 rtspAddress: :8554
 
-# All other protocols disabled — only RTSP is needed.
-# (WebRTC defaults to :8889, which collides with homebridge-camera-ffmpeg's
-#  motion HTTP endpoint — so these must be turned off, not just left default.)
+# All other protocols disabled — only RTSP is needed (keeps the footprint and
+# the listening surface minimal).
 rtmp: no
 hls: no
 webrtc: no
@@ -18,5 +17,6 @@ srt: no
 paths:
   camera:
     # Stream is published here by our Python service (picamera2 → ffmpeg → RTSP).
-    # mediamtx passively relays it to any consumer (homebridge-camera-ffmpeg).
-    # No runOnInit — the Pi camera is managed by the pi4cam.service Python process.
+    # mediamtx passively relays it to any consumer (the HAP-NodeJS app for live
+    # streaming, snapshots and HKSV). No runOnInit — the Pi camera is managed by
+    # the pi4cam.service Python process.
