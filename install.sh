@@ -32,16 +32,21 @@ fatal() { echo "ERROR: $*" >&2; exit 1; }
 # -----------------------------------------------------------------------
 # 1. System packages
 # -----------------------------------------------------------------------
-# Heal a half-removed NodeSource repo first: if the apt source still points at
-# a keyring that no longer exists (left over from a previous uninstall), every
-# `apt-get update` fails for ALL repos. Drop the stale source — step 2 re-adds
-# it cleanly with a fresh keyring.
-if [[ -f /etc/apt/sources.list.d/nodesource.list ]] \
-   && [[ ! -f /usr/share/keyrings/nodesource.gpg ]] \
-   && [[ ! -f /etc/apt/keyrings/nodesource.gpg ]]; then
-    info "Removing stale NodeSource apt source (its keyring is missing)..."
-    rm -f /etc/apt/sources.list.d/nodesource.list
-fi
+# Heal a half-removed NodeSource repo first: if the apt source points at a
+# keyring that no longer exists (left over from a previous uninstall), every
+# `apt-get update` fails for ALL repos. Read the keyring path the source
+# actually references (signed-by=...) and, if it's gone, drop the stale
+# source — step 2 re-adds it cleanly with a fresh keyring.
+for ns_src in /etc/apt/sources.list.d/nodesource.list \
+              /etc/apt/sources.list.d/nodesource.sources; do
+    [[ -f "${ns_src}" ]] || continue
+    ns_keyring="$(grep -hoE 'signed-by=[^] ]+' "${ns_src}" 2>/dev/null \
+        | head -1 | cut -d= -f2)"
+    if [[ -n "${ns_keyring}" && ! -f "${ns_keyring}" ]]; then
+        info "Removing stale NodeSource source ${ns_src} (keyring ${ns_keyring} missing)..."
+        rm -f "${ns_src}"
+    fi
+done
 
 info "Installing system packages..."
 apt-get update -qq
