@@ -3,10 +3,10 @@ pi4-IA-Homekit-Camera — main entry point.
 
 Starts the camera pipeline:
   picamera2 → H264 pipe → RtspPublisher (ffmpeg → mediamtx RTSP)
-  picamera2 → lores YUV → PresenceDetector (motion → homebridge webhook)
+  picamera2 → lores YUV → PresenceDetector (motion → HomeKit app webhook)
 
-HomeKit bridge (HKSV + live stream + motion sensor) is handled entirely
-by homebridge + homebridge-camera-ffmpeg running as a separate service.
+HomeKit (HKSV + live stream + motion sensor) is handled by the HAP-NodeJS
+app in homekit/, running as the separate pi4cam-homekit.service.
 """
 
 import logging
