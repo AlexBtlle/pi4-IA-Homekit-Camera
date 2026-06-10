@@ -23,11 +23,14 @@ No Homebridge, no plugins, no cloud account, no web dashboard. The camera pairs 
 
 | | |
 |---|---|
-| **Board** | Raspberry Pi 4 (any RAM size) |
+| **Board** | Raspberry Pi 4 (any RAM size) or Pi Zero 2 W |
 | **Camera** | Any CSI camera module supported by `libcamera` (Camera Module 2/3, HQ, NoIR…) |
-| **OS** | Raspberry Pi OS Bookworm (64-bit recommended) |
+| **OS** | Raspberry Pi OS Bookworm **64-bit** (required on the Zero 2 W, recommended on the Pi 4) |
 | **Apple side** | iPhone + a home hub (Apple TV 4K or HomePod) |
 | **For recordings** | iCloud+ subscription (any tier — HKSV recordings don't count against your storage) |
+
+> **Pi Zero 2 W**: fully supported, including HKSV. Measured on a real unit: ~194 MB RAM
+> idle, ~212 MB with an active live stream (out of 512 MB) — no swap, no tuning needed.
 
 ## Install
 
