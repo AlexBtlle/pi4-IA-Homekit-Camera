@@ -105,7 +105,10 @@ function main(): void {
             ],
             levels: [H264Level.LEVEL3_1, H264Level.LEVEL3_2, H264Level.LEVEL4_0],
           },
-          resolutions: videoResolutions,
+          // Recording is pure passthrough (-c:v copy): only advertise the
+          // resolution the camera actually produces, so the hub can never
+          // select one we cannot deliver.
+          resolutions: [[config.width, config.height, config.fps]],
         },
         audio: {
           codecs: [
