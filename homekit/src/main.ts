@@ -3,6 +3,9 @@ import path from "path";
 import qrcode from "qrcode-terminal";
 import {
   Accessory,
+  AudioBitrate,
+  AudioRecordingCodecType,
+  AudioRecordingSamplerate,
   AudioStreamingCodecType,
   AudioStreamingSamplerate,
   CameraController,
@@ -12,14 +15,17 @@ import {
   H264Level,
   H264Profile,
   HAPStorage,
+  MediaContainerType,
   Service,
   SRTPCryptoSuites,
   uuid,
+  VideoCodecType,
 } from "hap-nodejs";
 
 import { homekitDir, loadConfig, loadPairing } from "./config";
 import { SnapshotProvider } from "./snapshot";
 import { StreamingDelegate } from "./streaming";
+import { RecordingDelegate } from "./recording";
 import { MotionService } from "./motion";
 
 function main(): void {
@@ -44,6 +50,14 @@ function main(): void {
 
   const snapshots = new SnapshotProvider(config.rtspUrl);
   const streamingDelegate = new StreamingDelegate(config.rtspUrl, snapshots);
+  const recordingDelegate = new RecordingDelegate(config.rtspUrl);
+
+  const videoResolutions: [number, number, number][] = [
+    [config.width, config.height, config.fps],
+    [1280, 720, config.fps],
+    [640, 360, config.fps],
+    [320, 240, config.fps],
+  ];
 
   const options: CameraControllerOptions = {
     cameraStreamCount: 2, // allow a couple of simultaneous viewers
@@ -56,12 +70,7 @@ function main(): void {
           levels: [H264Level.LEVEL3_1, H264Level.LEVEL3_2, H264Level.LEVEL4_0],
         },
         // Cap at what the Pi actually produces so HomeKit never asks for more.
-        resolutions: [
-          [config.width, config.height, config.fps],
-          [1280, 720, config.fps],
-          [640, 360, config.fps],
-          [320, 240, config.fps],
-        ],
+        resolutions: videoResolutions,
       },
       // Video-only camera module: we declare an audio codec because HomeKit
       // requires one, but never emit audio packets.
@@ -75,8 +84,43 @@ function main(): void {
         ],
       },
     },
-    // Motion sensor managed by the controller. In Jalon 2 the same sensor will
-    // be tied to the HKSV recording delegate.
+    // HomeKit Secure Video. The motion sensor below is the trigger; on motion
+    // (while recording is enabled in Home) the delegate streams fragmented MP4
+    // to the home hub, which records to iCloud and classifies the activity.
+    recording: {
+      options: {
+        prebufferLength: 4000, // ms kept before the trigger
+        // EventTriggerOption.MOTION is derived automatically from sensors.motion.
+        mediaContainerConfiguration: {
+          type: MediaContainerType.FRAGMENTED_MP4,
+          fragmentLength: 4000,
+        },
+        video: {
+          type: VideoCodecType.H264,
+          parameters: {
+            profiles: [
+              H264Profile.BASELINE,
+              H264Profile.MAIN,
+              H264Profile.HIGH,
+            ],
+            levels: [H264Level.LEVEL3_1, H264Level.LEVEL3_2, H264Level.LEVEL4_0],
+          },
+          resolutions: videoResolutions,
+        },
+        audio: {
+          codecs: [
+            {
+              type: AudioRecordingCodecType.AAC_LC,
+              audioChannels: 1,
+              samplerate: AudioRecordingSamplerate.KHZ_32,
+              bitrateMode: AudioBitrate.VARIABLE,
+            },
+          ],
+        },
+      },
+      delegate: recordingDelegate,
+    },
+    // Motion sensor managed by the controller; it is the HKSV recording trigger.
     sensors: {
       motion: true,
     },
