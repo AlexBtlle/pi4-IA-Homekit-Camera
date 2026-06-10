@@ -41,7 +41,7 @@ for ns_src in /etc/apt/sources.list.d/nodesource.list \
               /etc/apt/sources.list.d/nodesource.sources; do
     [[ -f "${ns_src}" ]] || continue
     ns_keyring="$(grep -hoE 'signed-by=[^] ]+' "${ns_src}" 2>/dev/null \
-        | head -1 | cut -d= -f2)"
+        | head -1 | cut -d= -f2 || true)"
     if [[ -n "${ns_keyring}" && ! -f "${ns_keyring}" ]]; then
         info "Removing stale NodeSource source ${ns_src} (keyring ${ns_keyring} missing)..."
         rm -f "${ns_src}"
@@ -78,7 +78,10 @@ apt-get install -y \
 # configured node_24 repo can't override the node_22 pin (the exact trap that
 # blocked v1: apt kept Node 24 because the old repo list still had priority).
 NODE_MAJOR=22
-CURRENT_NODE_MAJOR="$(node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/')"
+# `|| true`: with `set -euo pipefail`, a failing command substitution in an
+# assignment aborts the whole script. When node isn't installed yet, the
+# pipeline returns 127 — which previously killed install.sh right here.
+CURRENT_NODE_MAJOR="$(node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/' || true)"
 if [[ "${CURRENT_NODE_MAJOR}" != "${NODE_MAJOR}" ]]; then
     info "Installing Node.js ${NODE_MAJOR}.x (current: ${CURRENT_NODE_MAJOR:-none})..."
     rm -f /etc/apt/sources.list.d/nodesource.list
@@ -96,7 +99,7 @@ if [[ ! -f /usr/local/bin/mediamtx ]]; then
         info "Fetching latest mediamtx version from GitHub..."
         MEDIAMTX_VERSION="$(curl -fsSL \
             "https://api.github.com/repos/bluenviron/mediamtx/releases/latest" \
-            | jq -r '.tag_name // empty')"
+            | jq -r '.tag_name // empty' || true)"
     else
         MEDIAMTX_VERSION="${MEDIAMTX_VERSION_OVERRIDE}"
     fi
