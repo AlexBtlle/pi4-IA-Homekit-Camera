@@ -42,26 +42,27 @@ export class RecordingDelegate implements CameraRecordingDelegate {
 
   async *handleRecordingStreamRequest(
     streamId: number,
+    signal?: AbortSignal,
   ): AsyncGenerator<RecordingPacket> {
     const prebufferMs = this.configuration?.prebufferLength ?? 4000;
     const ac = new AbortController();
+    if (signal?.aborted) {
+      ac.abort();
+    } else {
+      signal?.addEventListener("abort", () => ac.abort(), { once: true });
+    }
     this.streams.set(streamId, ac);
     console.log(`[hksv] stream ${streamId} started (prebuffer ${prebufferMs}ms)`);
 
     try {
-      // Buffer one fragment so we can flag the final one with isLast.
-      let pending: Buffer | undefined;
+      // Stream fragments as they are produced until the home hub closes the
+      // session (reason NORMAL once motion ends). Holding fragments back to
+      // mark the last one with isLast would delay every fragment by one GOP
+      // and lose the held fragment when HAP-NodeJS returns the generator on
+      // close — truncating each clip. Ending on the hub's close is the path
+      // the HAP spec describes, so isLast stays false throughout.
       for await (const data of this.prebuffer.segments(prebufferMs, ac.signal)) {
-        if (pending !== undefined) {
-          yield { data: pending, isLast: false };
-        }
-        pending = data;
-        if (ac.signal.aborted) {
-          break;
-        }
-      }
-      if (pending !== undefined) {
-        yield { data: pending, isLast: true };
+        yield { data, isLast: false };
       }
     } finally {
       this.streams.delete(streamId);
