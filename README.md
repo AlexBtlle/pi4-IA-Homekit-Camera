@@ -45,8 +45,10 @@ journalctl -u pi4cam-homekit -b --no-pager | head -40
 
 ### Pair with the Home app
 
-1. Open **Home** on your iPhone → **+** → **Add Accessory**
-2. Scan the QR code (or tap *More options…* and enter the PIN)
+1. Open `http://<pi-hostname>.local:8080` in Safari on your iPhone or Mac
+   — the page shows the QR code and PIN for your camera
+2. Open **Home** → **+** → **Add Accessory** → scan the QR code
+   (or tap *More options…* and enter the PIN)
 3. The "not certified" warning is normal for any DIY accessory — tap *Add Anyway*
 
 ### Enable HomeKit Secure Video
