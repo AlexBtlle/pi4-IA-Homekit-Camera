@@ -27,6 +27,7 @@ import { SnapshotProvider } from "./snapshot";
 import { StreamingDelegate } from "./streaming";
 import { RecordingDelegate } from "./recording";
 import { MotionService } from "./motion";
+import { QrWebServer } from "./qrweb";
 
 function main(): void {
   const config = loadConfig();
@@ -147,11 +148,19 @@ function main(): void {
     addIdentifyingMaterial: true,
   });
 
+  const qrWeb = new QrWebServer(
+    accessory.setupURI(),
+    pairing.pincode,
+    config.cameraName,
+    config.qrWebPort,
+  ).start();
+
   motion.start();
   printPairing(accessory, config.cameraName, pairing.pincode);
 
   const shutdown = () => {
     console.log("\n[pi4cam-homekit] shutting down…");
+    qrWeb.stop();
     motion.stop();
     accessory.unpublish();
     process.exit(0);
