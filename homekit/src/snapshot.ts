@@ -33,6 +33,9 @@ export class SnapshotProvider {
       "error",
       "-rtsp_transport",
       "tcp",
+      // Wait up to 5 s for the RTSP connection itself.
+      "-stimeout",
+      "5000000",
       "-i",
       this.rtspUrl,
       "-frames:v",
@@ -51,10 +54,12 @@ export class SnapshotProvider {
       const chunks: Buffer[] = [];
       const errChunks: Buffer[] = [];
 
+      // iperiod = fps×4 → keyframe every 4 s; we need at least one keyframe
+      // before ffmpeg can output a frame. Allow 12 s total.
       const timer = setTimeout(() => {
         ff.kill("SIGKILL");
         reject(new Error("snapshot timed out"));
-      }, 5000);
+      }, 12000);
 
       ff.stdout.on("data", (d: Buffer) => chunks.push(d));
       ff.stderr.on("data", (d: Buffer) => errChunks.push(d));

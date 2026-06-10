@@ -186,7 +186,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       "-srtp_out_params",
       srtpParams,
       `srtp://${session.address}:${session.videoPort}` +
-        `?rtcpport=${session.videoPort}&pkt_size=${mtu}`,
+        `?rtcpport=${session.videoReturnPort}&pkt_size=${mtu}`,
     ];
 
     const ff = spawn("ffmpeg", args);
