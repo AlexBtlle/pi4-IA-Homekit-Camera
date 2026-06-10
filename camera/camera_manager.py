@@ -76,11 +76,12 @@ class CameraManager:
         self._picam2.pre_callback = self._lores_callback
 
         self._pipe_r, self._pipe_w = os.pipe()
-        # iperiod = 2 × fps → a keyframe every 2 s. HKSV asks for ~4 s fMP4
-        # fragments that must start on a keyframe; a 2 s GOP lets ffmpeg cut
-        # fragments on keyframe boundaries without re-encoding.
+        # iperiod = 4 × fps → a keyframe every 4 s, matching HKSV's default
+        # fragment length. The recording pipeline fragments on keyframes
+        # (movflags frag_keyframe), so a 4 s GOP yields clean 4 s fMP4
+        # fragments without any re-encoding.
         self._encoder = H264Encoder(
-            bitrate=self._bitrate, iperiod=self._fps * 2
+            bitrate=self._bitrate, iperiod=self._fps * 4
         )
 
         self._picam2.start()
