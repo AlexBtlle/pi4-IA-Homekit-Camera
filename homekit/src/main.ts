@@ -156,6 +156,7 @@ function main(): void {
   ).start();
 
   motion.start();
+  snapshots.prime(config.width, config.height);
   printPairing(accessory, config.cameraName, pairing.pincode);
 
   const shutdown = () => {
