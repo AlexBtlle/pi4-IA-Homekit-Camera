@@ -1,103 +1,119 @@
-import { spawn, ChildProcess } from "child_process";
+import { spawn } from "child_process";
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
 
 /**
- * Keeps a persistent ffmpeg process running that continuously grabs one JPEG
- * frame every 5 seconds from the RTSP stream and stores it in memory.
+ * Maintains a fresh JPEG snapshot from the RTSP stream.
  *
- * HomeKit snapshot requests are answered instantly from the in-memory cache.
- * If ffmpeg dies (RTSP disconnect, etc.) it is restarted automatically after
- * 2 s so the cache is always kept fresh.
+ * A grab loop runs continuously: one ffmpeg invocation grabs a single frame,
+ * writes it to a temp file, renames it atomically into place, then waits 5 s
+ * before the next grab.  Renaming is atomic on Linux so readers always see a
+ * complete JPEG.
  *
- * This replaces the on-demand grab approach which had two failure modes:
- *  - cold start: first grab took 5-12 s (RTSP connect + keyframe wait) →
- *    HomeKit timed out and showed a black tile
- *  - silent failure: background refreshes failed without updating the cache,
- *    so the tile froze on whatever frame was captured last
+ * HomeKit snapshot requests are served immediately from the on-disk file —
+ * no pipeline, no MJPEG parsing, no Buffer pool gymnastics.
  */
 export class SnapshotProvider {
-  private cache?: Buffer;
-  private ff?: ChildProcess;
+  readonly snapshotFile: string;
   private stopped = false;
 
   constructor(
     private readonly rtspUrl: string,
     private readonly width: number,
     private readonly height: number,
-  ) {}
+  ) {
+    this.snapshotFile = path.join(os.tmpdir(), "pi4cam-snapshot.jpg");
+  }
 
   start(): void {
-    this.launch();
+    const loop = () => {
+      this.grab().finally(() => {
+        if (!this.stopped) setTimeout(loop, 5_000);
+      });
+    };
+    loop();
   }
 
   stop(): void {
     this.stopped = true;
-    this.ff?.kill("SIGKILL");
   }
 
-  get(): Promise<Buffer> {
-    if (this.cache) return Promise.resolve(this.cache);
-
-    // No frame yet (first few seconds after startup): poll briefly.
-    return new Promise((resolve, reject) => {
-      const deadline = Date.now() + 10_000;
-      const id = setInterval(() => {
-        if (this.cache) {
-          clearInterval(id);
-          resolve(this.cache!);
-        } else if (Date.now() >= deadline) {
-          clearInterval(id);
-          reject(new Error("snapshot not yet available"));
-        }
-      }, 100);
-    });
-  }
-
-  private launch(): void {
-    if (this.stopped) return;
-
-    const ff = spawn("ffmpeg", [
-      "-hide_banner", "-loglevel", "error",
-      "-rtsp_transport", "tcp",
-      "-stimeout", "10000000",
-      "-i", this.rtspUrl,
-      "-vf", `fps=1/5,scale=${this.width}:${this.height}`,
-      "-f", "image2pipe",
-      "-vcodec", "mjpeg",
-      "pipe:1",
-    ]);
-
-    this.ff = ff;
-    const chunks: Buffer[] = [];
-
-    ff.stdout.on("data", (chunk: Buffer) => {
-      chunks.push(chunk);
-      const buf = Buffer.concat(chunks);
-      chunks.length = 0;
-      const remaining = this.extractFrames(buf);
-      if (remaining.length > 0) chunks.push(remaining);
-    });
-
-    ff.on("close", () => {
-      if (!this.stopped) {
-        console.log("[snapshot] ffmpeg exited, restarting in 2 s…");
-        setTimeout(() => this.launch(), 2_000);
-      }
-    });
-  }
-
-  // JPEG frames are delimited by 0xFF 0xD8 (SOI) … 0xFF 0xD9 (EOI).
-  // Extract every complete frame from the accumulated buffer and return
-  // whatever bytes remain after the last complete frame.
-  private extractFrames(buf: Buffer): Buffer {
-    let offset = 0;
-    for (;;) {
-      const soi = buf.indexOf(Buffer.from([0xff, 0xd8]), offset);
-      if (soi === -1) break;
-      const eoi = buf.indexOf(Buffer.from([0xff, 0xd9]), soi + 2);
-      if (eoi === -1) break;
-      this.cache = Buffer.from(buf.buffer, buf.byteOffset + soi, eoi + 2 - soi);
-      offset = eoi + 2;
+  /** Returns the latest cached JPEG, waiting up to 10 s if none yet. */
+  async get(): Promise<Buffer> {
+    try {
+      const buf = await fs.readFile(this.snapshotFile);
+      console.log(`[snapshot] served ${buf.length} bytes`);
+      return buf;
+    } catch {
+      // File not yet created (first grab still in progress).
+      return new Promise((resolve, reject) => {
+        const deadline = Date.now() + 10_000;
+        const id = setInterval(async () => {
+          try {
+            const buf = await fs.readFile(this.snapshotFile);
+            clearInterval(id);
+            console.log(`[snapshot] served ${buf.length} bytes (after wait)`);
+            resolve(buf);
+          } catch {
+            if (Date.now() >= deadline) {
+              clearInterval(id);
+              reject(new Error("snapshot not yet available"));
+            }
+          }
+        }, 200);
+      });
     }
-    return offset > 0 ? Buffer.from(buf.buffer, buf.byteOffset + offset) : buf;
+  }
+
+  private grab(): Promise<void> {
+    const tmp = this.snapshotFile + ".tmp";
+
+    return new Promise((resolve) => {
+      const ff = spawn("ffmpeg", [
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-rtsp_transport",
+        "tcp",
+        "-stimeout",
+        "10000000",
+        "-i",
+        this.rtspUrl,
+        "-frames:v",
+        "1",
+        "-vf",
+        `scale=${this.width}:${this.height}`,
+        "-f",
+        "image2",
+        "-y",
+        tmp,
+      ]);
+
+      const errLines: string[] = [];
+      ff.stderr.on("data", (d: Buffer) => errLines.push(d.toString()));
+
+      ff.on("error", (e) => {
+        console.error("[snapshot] spawn error:", e.message);
+        resolve();
+      });
+
+      ff.on("close", async (code) => {
+        if (code === 0) {
+          try {
+            await fs.rename(tmp, this.snapshotFile);
+            console.log("[snapshot] frame captured");
+          } catch (e) {
+            console.error("[snapshot] rename failed:", e);
+          }
+        } else {
+          const msg = errLines.join("").trim().slice(-300);
+          console.error(
+            `[snapshot] grab failed (code ${code})${msg ? ": " + msg : ""}`,
+          );
+        }
+        resolve();
+      });
+    });
   }
 }
