@@ -13,7 +13,7 @@ class CameraManager:
     Provides a continuous H264 stream (piped to RtspPublisher) and a lores
     YUV420 stream (consumed by PresenceDetector). The H264 encoder runs from
     start() onwards — no on-demand start/stop needed since mediamtx relays
-    the stream and homebridge-camera-ffmpeg reads from mediamtx.
+    the stream and the HomeKit app reads from mediamtx.
     """
 
     _instance = None
@@ -76,7 +76,13 @@ class CameraManager:
         self._picam2.pre_callback = self._lores_callback
 
         self._pipe_r, self._pipe_w = os.pipe()
-        self._encoder = H264Encoder(bitrate=self._bitrate)
+        # iperiod = 4 × fps → a keyframe every 4 s, matching HKSV's default
+        # fragment length. The recording pipeline fragments on keyframes
+        # (movflags frag_keyframe), so a 4 s GOP yields clean 4 s fMP4
+        # fragments without any re-encoding.
+        self._encoder = H264Encoder(
+            bitrate=self._bitrate, iperiod=self._fps * 4
+        )
 
         self._picam2.start()
         self._picam2.start_encoder(

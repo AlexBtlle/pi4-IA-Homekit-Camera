@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Node / HomeKit app
+homekit/node_modules/
+homekit/dist/
+homekit/persist/
+homekit/pairing.json
+
+# Models downloaded by install.sh
+models/*.caffemodel
+models/*.prototxt
+
+# Local pairing/runtime state
+*.log

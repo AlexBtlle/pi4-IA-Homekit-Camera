@@ -1,8 +1,8 @@
+import json
 import logging
 import os
 import threading
 import time
-import urllib.parse
 import urllib.request
 
 import cv2
@@ -22,13 +22,16 @@ DNN_MEAN = 127.5
 
 class PresenceDetector:
     """
-    Background daemon thread: two-stage presence detection.
+    Background daemon thread: motion-based presence detection.
       Stage 1 — MOG2 background subtraction  (~2 ms, always on)
-      Stage 2 — TFLite MobileNet SSD person detection (~80 ms, only on motion)
+      Stage 2 — OpenCV DNN MobileNet-SSD person filter (optional, opt-in via
+                require_person; ~80 ms, only runs on motion)
 
-    On detection: HTTP GET to homebridge-camera-ffmpeg's porthttp endpoint,
-    which sets the HomeKit MotionSensor to true and triggers HKSV recording.
-    homebridge resets the sensor automatically after motionTimeout seconds.
+    On trigger: HTTP POST to the local HomeKit app's motion endpoint, which
+    sets the HomeKit MotionSensor to true and arms HKSV recording. The app
+    resets the sensor automatically after its motion timeout.
+    By default person/animal/vehicle classification is left to HomeKit Secure
+    Video on the home hub (Apple TV / HomePod).
     """
 
     WARMUP_FRAMES = 60
@@ -43,17 +46,19 @@ class PresenceDetector:
         self._mog2_shadows = bool(cfg.get("mog2_detect_shadows", False))
         self._min_area = int(cfg.get("min_motion_area", 1500))
         self._person_threshold = float(cfg.get("person_confidence", 0.55))
-        self._cooldown = float(cfg.get("cooldown", 60))
+        self._cooldown = float(cfg.get("cooldown", 30))
+        # Local person filter is optional; by default we trigger on motion and
+        # let HomeKit Secure Video classify person/animal/vehicle on the hub.
+        self._require_person = bool(cfg.get("require_person", False))
+        self._debug = bool(cfg.get("debug", False))
+        self._last_diag = 0.0
 
-        hb_cfg = config.get("homebridge", {})
-        porthttp = int(hb_cfg.get("porthttp", 8889))
-        camera_name = hb_cfg.get("camera_name", "Pi Camera")
-        # homebridge-camera-ffmpeg HTTP motion trigger:
-        # GET http://localhost:<porthttp>/<camera-name>?motion=true
-        self._webhook_url = (
-            f"http://localhost:{porthttp}/"
-            f"{urllib.parse.quote(camera_name)}?motion=true"
-        )
+        hk_cfg = config.get("homekit", {})
+        motion_port = int(hk_cfg.get("motion_port", 8989))
+        # Our HAP-NodeJS app exposes a tiny motion endpoint on localhost:
+        #   POST http://localhost:<motion_port>/motion
+        # → triggers the HomeKit MotionSensor and arms HKSV recording.
+        self._webhook_url = f"http://localhost:{motion_port}/motion"
 
         self._stop_event = threading.Event()
         self._last_trigger = 0.0
@@ -84,9 +89,14 @@ class PresenceDetector:
             detectShadows=self._mog2_shadows,
         )
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        model_ok = self._load_model()
+        # Only load the DNN if a local person filter was explicitly requested.
+        model_ok = self._load_model() if self._require_person else False
         warmup = self.WARMUP_FRAMES
-        logger.info("Detection loop running (person detection: %s)", model_ok)
+        logger.info(
+            "Detection loop running (mode: %s)",
+            "motion + local person filter" if model_ok
+            else "motion-only — HKSV classifies on the hub",
+        )
 
         while not self._stop_event.is_set():
             frame = self._camera_manager.get_lores_frame(timeout=1.0)
@@ -104,7 +114,8 @@ class PresenceDetector:
             contours, _ = cv2.findContours(
                 fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
             )
-            if not any(cv2.contourArea(c) >= self._min_area for c in contours):
+            max_area = max((cv2.contourArea(c) for c in contours), default=0)
+            if max_area < self._min_area:
                 continue
 
             # Cooldown gate
@@ -112,15 +123,25 @@ class PresenceDetector:
             if now - self._last_trigger < self._cooldown:
                 continue
 
-            # Stage 2: DNN person detection (falls back to motion-only if no model)
-            person_detected = self._run_dnn(frame) if model_ok else True
+            # Stage 2 (optional): local person filter before triggering.
+            if model_ok:
+                person, best_conf = self._run_dnn(frame)
+                if self._debug and now - self._last_diag >= 2.0:
+                    self._last_diag = now
+                    logger.info(
+                        "motion area=%d  person_conf=%.2f (thr=%.2f) → %s",
+                        int(max_area), best_conf, self._person_threshold,
+                        "PERSON" if person else "no person",
+                    )
+                if not person:
+                    continue
 
-            if person_detected:
-                self._last_trigger = now
-                logger.info("Person detected — sending motion webhook")
-                threading.Thread(
-                    target=self._send_webhook, daemon=True
-                ).start()
+            self._last_trigger = now
+            logger.info(
+                "Motion%s detected — sending webhook (area=%d)",
+                " + person" if model_ok else "", int(max_area),
+            )
+            threading.Thread(target=self._send_webhook, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Webhook
@@ -128,7 +149,14 @@ class PresenceDetector:
 
     def _send_webhook(self) -> None:
         try:
-            urllib.request.urlopen(self._webhook_url, timeout=2)
+            payload = json.dumps({"source": "pi4cam"}).encode()
+            req = urllib.request.Request(
+                self._webhook_url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=2)
             logger.debug("Motion webhook OK")
         except Exception:
             logger.warning("Motion webhook failed", exc_info=True)
@@ -163,7 +191,8 @@ class PresenceDetector:
                 return os.path.abspath(proto), os.path.abspath(model)
         return None, None
 
-    def _run_dnn(self, y_frame: np.ndarray) -> bool:
+    def _run_dnn(self, y_frame: np.ndarray) -> tuple[bool, float]:
+        """Returns (person_above_threshold, best_person_confidence)."""
         # The model expects 3-channel BGR input; our lores frame is the Y
         # (luma) plane, so replicate it across the three channels.
         bgr = cv2.cvtColor(y_frame, cv2.COLOR_GRAY2BGR)
@@ -173,10 +202,10 @@ class PresenceDetector:
         self._net.setInput(blob)
         detections = self._net.forward()  # shape (1, 1, N, 7)
 
+        best_conf = 0.0
         for i in range(detections.shape[2]):
             class_id = int(detections[0, 0, i, 1])
             confidence = float(detections[0, 0, i, 2])
-            if class_id == PERSON_CLASS_ID and confidence >= self._person_threshold:
-                logger.debug("Person confidence=%.2f", confidence)
-                return True
-        return False
+            if class_id == PERSON_CLASS_ID:
+                best_conf = max(best_conf, confidence)
+        return best_conf >= self._person_threshold, best_conf

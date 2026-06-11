@@ -32,6 +32,22 @@ fatal() { echo "ERROR: $*" >&2; exit 1; }
 # -----------------------------------------------------------------------
 # 1. System packages
 # -----------------------------------------------------------------------
+# Heal a half-removed NodeSource repo first: if the apt source points at a
+# keyring that no longer exists (left over from a previous uninstall), every
+# `apt-get update` fails for ALL repos. Read the keyring path the source
+# actually references (signed-by=...) and, if it's gone, drop the stale
+# source — step 2 re-adds it cleanly with a fresh keyring.
+for ns_src in /etc/apt/sources.list.d/nodesource.list \
+              /etc/apt/sources.list.d/nodesource.sources; do
+    [[ -f "${ns_src}" ]] || continue
+    ns_keyring="$(grep -hoE 'signed-by=[^] ]+' "${ns_src}" 2>/dev/null \
+        | head -1 | cut -d= -f2 || true)"
+    if [[ -n "${ns_keyring}" && ! -f "${ns_keyring}" ]]; then
+        info "Removing stale NodeSource source ${ns_src} (keyring ${ns_keyring} missing)..."
+        rm -f "${ns_src}"
+    fi
+done
+
 info "Installing system packages..."
 apt-get update -qq
 apt-get install -y \
@@ -55,26 +71,24 @@ apt-get install -y \
 # person detection runs through OpenCV's built-in DNN module.
 
 # -----------------------------------------------------------------------
-# 2. Node.js LTS (for homebridge)
+# 2. Node.js 22 (for the HAP-NodeJS HomeKit app)
 # -----------------------------------------------------------------------
-if ! command -v node &>/dev/null; then
-    info "Installing Node.js LTS..."
-    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
-    apt-get install -y nodejs
+# Pinned to Node 22 LTS: hap-nodejs targets active LTS lines. We install from
+# the NodeSource apt repo, removing any stale repo file first so a previously
+# configured node_24 repo can't override the node_22 pin (the exact trap that
+# blocked v1: apt kept Node 24 because the old repo list still had priority).
+NODE_MAJOR=22
+# `|| true`: with `set -euo pipefail`, a failing command substitution in an
+# assignment aborts the whole script. When node isn't installed yet, the
+# pipeline returns 127 — which previously killed install.sh right here.
+CURRENT_NODE_MAJOR="$(node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/' || true)"
+if [[ "${CURRENT_NODE_MAJOR}" != "${NODE_MAJOR}" ]]; then
+    info "Installing Node.js ${NODE_MAJOR}.x (current: ${CURRENT_NODE_MAJOR:-none})..."
+    rm -f /etc/apt/sources.list.d/nodesource.list
+    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
+    apt-get install -y --allow-downgrades nodejs
 else
     info "Node.js $(node --version) already installed, skipping."
-fi
-
-# -----------------------------------------------------------------------
-# 3. homebridge + homebridge-camera-ffmpeg
-# -----------------------------------------------------------------------
-if ! command -v homebridge &>/dev/null; then
-    info "Installing homebridge and homebridge-camera-ffmpeg..."
-    npm install -g --unsafe-perm homebridge homebridge-camera-ffmpeg
-else
-    info "homebridge already installed, checking for plugin..."
-    npm list -g homebridge-camera-ffmpeg --depth=0 &>/dev/null || \
-        npm install -g --unsafe-perm homebridge-camera-ffmpeg
 fi
 
 # -----------------------------------------------------------------------
@@ -85,7 +99,7 @@ if [[ ! -f /usr/local/bin/mediamtx ]]; then
         info "Fetching latest mediamtx version from GitHub..."
         MEDIAMTX_VERSION="$(curl -fsSL \
             "https://api.github.com/repos/bluenviron/mediamtx/releases/latest" \
-            | jq -r '.tag_name // empty')"
+            | jq -r '.tag_name // empty' || true)"
     else
         MEDIAMTX_VERSION="${MEDIAMTX_VERSION_OVERRIDE}"
     fi
@@ -122,10 +136,18 @@ fi
 # 5. Project files
 # -----------------------------------------------------------------------
 info "Deploying project files to ${INSTALL_DIR}..."
-mkdir -p "${INSTALL_DIR}"/{src,models,homebridge}
+mkdir -p "${INSTALL_DIR}"/{camera,models,homekit}
 
-# Python sources
-cp -r "${SRC_DIR}/src/." "${INSTALL_DIR}/src/"
+# Python sources (the camera pipeline + detection)
+cp -r "${SRC_DIR}/camera/." "${INSTALL_DIR}/camera/"
+
+# HomeKit app sources (build happens in step 8, below). Copy package files and
+# the TypeScript sources; node_modules/dist/pairing.json are produced on-box.
+cp "${SRC_DIR}/homekit/package.json" \
+   "${SRC_DIR}/homekit/package-lock.json" \
+   "${SRC_DIR}/homekit/tsconfig.json" \
+   "${INSTALL_DIR}/homekit/"
+cp -r "${SRC_DIR}/homekit/src" "${INSTALL_DIR}/homekit/"
 
 # mediamtx config — only copy if not already customised
 if [[ ! -f "${INSTALL_DIR}/mediamtx.yml" ]]; then
@@ -170,34 +192,50 @@ fi
 info "Python dependencies installed."
 
 # -----------------------------------------------------------------------
-# 8. homebridge config.json (generated with unique MAC + PIN)
+# 8. HomeKit app: build + pairing secrets (unique MAC + PIN + setup ID)
 # -----------------------------------------------------------------------
-HB_CONFIG="${INSTALL_DIR}/homebridge/config.json"
-if [[ ! -f "${HB_CONFIG}" ]]; then
-    info "Generating homebridge config..."
+info "Building the HomeKit app (npm ci + tsc)..."
+pushd "${INSTALL_DIR}/homekit" >/dev/null
+if [[ -f package-lock.json ]]; then
+    npm ci --no-audit --no-fund
+else
+    npm install --no-audit --no-fund
+fi
+npm run build
+popd >/dev/null
 
-    # Random 6-byte MAC (locally administered, unicast)
-    MAC="$(python3 -c "
-import random
-mac = [random.randint(0,255) for _ in range(6)]
-mac[0] = (mac[0] & 0xFE) | 0x02   # locally administered, unicast
-print(':'.join(f'{b:02X}' for b in mac))
-")"
-
-    # Valid HomeKit PIN in format XXX-XX-XXX (avoid 000-00-000 etc.)
+# Pairing secrets — generated once, then preserved across re-runs so the
+# camera keeps its identity (re-pairing not required after an update).
+PAIRING="${INSTALL_DIR}/homekit/pairing.json"
+if [[ ! -f "${PAIRING}" ]]; then
+    info "Generating HomeKit pairing secrets..."
     PIN="$(python3 -c "
 import random
-digits = [random.randint(0,9) for _ in range(8)]
-print(f'{''.join(str(d) for d in digits[:3])}-{''.join(str(d) for d in digits[3:5])}-{''.join(str(d) for d in digits[5:])}')
+d = [random.randint(0,9) for _ in range(8)]
+print(f\"{''.join(map(str,d[:3]))}-{''.join(map(str,d[3:5]))}-{''.join(map(str,d[5:]))}\")
 ")"
-
-    sed -e "s/__MAC__/${MAC}/" -e "s/__PIN__/${PIN}/" \
-        "${SRC_DIR}/homebridge/config.json" > "${HB_CONFIG}"
-    info "homebridge config written (PIN: ${PIN})"
+    MAC="$(python3 -c "
+import random
+m = [random.randint(0,255) for _ in range(6)]
+m[0] = (m[0] & 0xFE) | 0x02   # locally administered, unicast
+print(':'.join(f'{b:02X}' for b in m))
+")"
+    SETUP_ID="$(python3 -c "
+import random, string
+print(''.join(random.choices(string.ascii_uppercase + string.digits, k=4)))
+")"
+    cat > "${PAIRING}" <<EOF
+{
+  "username": "${MAC}",
+  "pincode": "${PIN}",
+  "setupID": "${SETUP_ID}"
+}
+EOF
+    chmod 600 "${PAIRING}"
+    info "Pairing secrets written (PIN: ${PIN})"
 else
-    info "homebridge config already exists, preserving it."
-    # Extract PIN for display at the end
-    PIN="$(python3 -c "import json,sys; print(json.load(open('${HB_CONFIG}'))['bridge']['pin'])")"
+    info "Pairing secrets already exist, preserving them."
+    PIN="$(python3 -c "import json; print(json.load(open('${PAIRING}'))['pincode'])")"
 fi
 
 chown -R "${RUN_USER}:${RUN_USER}" "${INSTALL_DIR}"
@@ -212,33 +250,18 @@ info "Installing systemd services..."
 sed "s/__USER__/${RUN_USER}/" "${SRC_DIR}/mediamtx.service" \
     > /etc/systemd/system/mediamtx.service
 
-# homebridge
-cat > /etc/systemd/system/homebridge.service << EOF
-[Unit]
-Description=Homebridge HomeKit bridge (+ homebridge-camera-ffmpeg HKSV)
-After=network-online.target avahi-daemon.service mediamtx.service pi4cam.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=${RUN_USER}
-Environment=HOME=${INSTALL_DIR}/homebridge
-ExecStart=$(which homebridge) -U ${INSTALL_DIR}/homebridge -I
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# pi4cam Python service
+# pi4cam Python service (camera pipeline + detection)
 sed "s/__USER__/${RUN_USER}/" "${SRC_DIR}/pi4cam.service" \
     > /etc/systemd/system/pi4cam.service
+
+# pi4cam HomeKit app (HAP-NodeJS)
+sed "s/__USER__/${RUN_USER}/" "${SRC_DIR}/pi4cam-homekit.service" \
+    > /etc/systemd/system/pi4cam-homekit.service
 
 systemctl daemon-reload
 systemctl enable --now mediamtx
 systemctl enable --now pi4cam
-systemctl enable --now homebridge
+systemctl enable --now pi4cam-homekit
 
 # -----------------------------------------------------------------------
 # Done
@@ -256,18 +279,18 @@ echo "  │  HomeKit pairing PIN: ${PIN}   │"
 echo "  └──────────────────────────────────┘"
 echo ""
 echo "  Pour coupler la caméra :"
-echo "  1. Ouvre l'app Maison sur iPhone"
-echo "  2. Appuie sur + → Ajouter un accessoire"
-echo "  3. Choisis 'Code sans QR code'"
-echo "  4. Saisis le PIN affiché ci-dessus"
-echo "     (ou scanne le QR : journalctl -u homebridge | head -50)"
+echo "  1. Ouvre cette page depuis ton iPhone ou Mac :"
+echo "       http://\$(hostname).local:8080"
+echo "       http://\${LOCAL_IP}:8080"
+echo "  2. Scanne le QR code affiché sur la page"
+echo "     (ou 'Plus d'options…' → saisis le PIN ci-dessus)"
 echo ""
-echo "  Pour activer HKSV :"
-echo "  Maison → réglages caméra → Streaming et enregistrement"
-echo "  → choisir 'Activité détectée'"
+echo "  Pour activer HKSV (enregistrement iCloud) :"
+echo "  Maison → réglages caméra → Options d'enregistrement"
+echo "  → 'Enregistrer le flux' + activité Personnes / Animaux"
 echo ""
 echo "  Logs :"
-echo "    mediamtx  : journalctl -u mediamtx -f"
-echo "    pi4cam    : journalctl -u pi4cam -f"
-echo "    homebridge: journalctl -u homebridge -f"
+echo "    mediamtx       : journalctl -u mediamtx -f"
+echo "    pi4cam         : journalctl -u pi4cam -f"
+echo "    pi4cam-homekit : journalctl -u pi4cam-homekit -f"
 echo "=========================================================="
