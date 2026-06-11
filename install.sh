@@ -259,9 +259,8 @@ sed "s/__USER__/${RUN_USER}/" "${SRC_DIR}/pi4cam-homekit.service" \
     > /etc/systemd/system/pi4cam-homekit.service
 
 systemctl daemon-reload
-systemctl enable --now mediamtx
-systemctl enable --now pi4cam
-systemctl enable --now pi4cam-homekit
+systemctl enable mediamtx pi4cam pi4cam-homekit
+systemctl restart mediamtx pi4cam pi4cam-homekit
 
 # -----------------------------------------------------------------------
 # Done
