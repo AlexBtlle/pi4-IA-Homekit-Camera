@@ -16,14 +16,20 @@ export class SnapshotProvider {
   private cacheTime = 0;
   private refreshing?: Promise<Buffer>;
   private static readonly FRESH_MS = 4000;
+  private static readonly REFRESH_INTERVAL_MS = 30_000;
 
   constructor(private readonly rtspUrl: string) {}
 
-  /** Fill the cache at startup so the first Home-app request is instant. */
+  /** Fill the cache at startup so the first Home-app request is instant,
+   *  then keep it warm in the background so the tile is never more than
+   *  REFRESH_INTERVAL_MS stale when someone opens the Home app. */
   prime(width: number, height: number): void {
-    this.refresh(width, height).catch((err) =>
-      console.error("[snapshot] prime failed:", err.message),
-    );
+    const tick = () =>
+      this.refresh(width, height).catch((err) =>
+        console.error("[snapshot] background refresh failed:", err.message),
+      );
+    tick();
+    setInterval(tick, SnapshotProvider.REFRESH_INTERVAL_MS);
   }
 
   async get(width: number, height: number): Promise<Buffer> {
