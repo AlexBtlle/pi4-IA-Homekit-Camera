@@ -26,6 +26,7 @@ detection:
   mog2_var_threshold: 40
   min_motion_area: 1500
   cooldown: 30               # seconds before re-triggering after a detection
+  analysis_fps: 10           # MOG2 analysis rate; reduce to save CPU (Pi Zero 2W: 10)
 
   # Person classification is handled by HomeKit Secure Video on the Apple TV /
   # HomePod (Apple's on-device AI: People / Animals / Vehicles / Packages).

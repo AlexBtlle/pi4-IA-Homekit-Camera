@@ -52,6 +52,9 @@ class PresenceDetector:
         self._require_person = bool(cfg.get("require_person", False))
         self._debug = bool(cfg.get("debug", False))
         self._last_diag = 0.0
+        analysis_fps = float(cfg.get("analysis_fps", 10))
+        self._frame_interval = 1.0 / analysis_fps if analysis_fps > 0 else 0.0
+        self._last_analysis = 0.0
 
         hk_cfg = config.get("homekit", {})
         motion_port = int(hk_cfg.get("motion_port", 8989))
@@ -107,6 +110,11 @@ class PresenceDetector:
                 mog2.apply(frame)
                 warmup -= 1
                 continue
+
+            now = time.monotonic()
+            if self._frame_interval > 0 and (now - self._last_analysis) < self._frame_interval:
+                continue
+            self._last_analysis = now
 
             # Stage 1: background subtraction
             fg_mask = mog2.apply(frame)
