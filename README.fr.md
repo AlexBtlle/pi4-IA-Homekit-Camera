@@ -101,7 +101,7 @@ Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Après modificat
 | `camera.rotation` | 0 | 0 / 90 / 180 / 270 |
 | `homekit.camera_name` | Pi Camera | Nom affiché dans l'app Maison |
 | `homekit.motion_timeout` | 10 | Durée (s) d'activation du capteur de mouvement |
-| `detection.min_motion_area` | 1500 | Sensibilité du mouvement (plus petit = plus sensible) |
+| `detection.min_motion_area` | 1500 | Sensibilité du mouvement (plus petit = plus sensible). Valeur par défaut calibrée pour les humains (~3 000 px à 320×240). Réduire à ~600 pour détecter aussi les chats/chiens. |
 | `detection.cooldown` | 30 | Délai (s) entre deux déclenchements |
 | `detection.require_person` | false | Filtre personne local optionnel (MobileNet-SSD) avant déclenchement |
 

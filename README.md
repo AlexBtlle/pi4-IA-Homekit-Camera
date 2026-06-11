@@ -100,7 +100,7 @@ Everything lives in one file: [`config.yaml`](config.yaml). After editing, re-ru
 | `camera.rotation` | 0 | 0 / 90 / 180 / 270 |
 | `homekit.camera_name` | Pi Camera | Name shown in the Home app |
 | `homekit.motion_timeout` | 10 | Seconds the motion sensor stays active |
-| `detection.min_motion_area` | 1500 | Motion sensitivity (smaller = more sensitive) |
+| `detection.min_motion_area` | 1500 | Motion sensitivity (smaller = more sensitive). Default is tuned for humans (~3 000 px at 320×240). Reduce to ~600 to also detect cats/dogs. |
 | `detection.cooldown` | 30 | Seconds between two motion triggers |
 | `detection.require_person` | false | Optional local person filter (MobileNet-SSD) before triggering |
 
