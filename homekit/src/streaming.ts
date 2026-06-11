@@ -64,7 +64,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     callback: SnapshotRequestCallback,
   ): void {
     this.snapshots
-      .get(request.width, request.height)
+      .get()
       .then((jpeg) => callback(undefined, jpeg))
       .catch((err) => {
         console.error("[stream] snapshot failed:", err.message);

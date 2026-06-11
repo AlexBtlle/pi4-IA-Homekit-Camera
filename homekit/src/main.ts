@@ -49,7 +49,7 @@ function main(): void {
     .setCharacteristic(Characteristic.SerialNumber, pairing.username)
     .setCharacteristic(Characteristic.FirmwareRevision, "2.0.0");
 
-  const snapshots = new SnapshotProvider(config.rtspUrl);
+  const snapshots = new SnapshotProvider(config.rtspUrl, config.width, config.height);
   const streamingDelegate = new StreamingDelegate(config.rtspUrl, snapshots);
   const recordingDelegate = new RecordingDelegate(config.rtspUrl);
 
@@ -156,12 +156,13 @@ function main(): void {
   ).start();
 
   motion.start();
-  snapshots.prime(config.width, config.height);
+  snapshots.start();
   printPairing(accessory, config.cameraName, pairing.pincode);
 
   const shutdown = () => {
     console.log("\n[pi4cam-homekit] shutting down…");
     qrWeb.stop();
+    snapshots.stop();
     motion.stop();
     accessory.unpublish();
     process.exit(0);
