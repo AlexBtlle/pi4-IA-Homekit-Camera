@@ -42,7 +42,6 @@ export class SnapshotProvider {
       if (Date.now() - stat.mtimeMs > SnapshotProvider.STALE_MS) {
         this.grabIfIdle(); // refresh in background, serve stale now
       }
-      console.log(`[snapshot] served ${buf.length} bytes`);
       return buf;
     } catch {
       // No cached file yet — wait for the first grab (up to 20 s).
@@ -63,7 +62,6 @@ export class SnapshotProvider {
         try {
           const buf = await fs.readFile(this.snapshotFile);
           clearInterval(id);
-          console.log(`[snapshot] served ${buf.length} bytes (after wait)`);
           resolve(buf);
         } catch {
           if (Date.now() >= deadline) {
