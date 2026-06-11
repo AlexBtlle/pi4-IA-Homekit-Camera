@@ -29,7 +29,7 @@ export class SnapshotProvider {
   start(): void {
     const loop = () => {
       this.grab().finally(() => {
-        if (!this.stopped) setTimeout(loop, 5_000);
+        if (!this.stopped) setTimeout(loop, 60_000);
       });
     };
     loop();
