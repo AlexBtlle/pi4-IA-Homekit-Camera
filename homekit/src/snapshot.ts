@@ -76,8 +76,6 @@ export class SnapshotProvider {
         "warning",
         "-rtsp_transport",
         "tcp",
-        "-stimeout",
-        "10000000",
         "-i",
         this.rtspUrl,
         "-frames:v",
