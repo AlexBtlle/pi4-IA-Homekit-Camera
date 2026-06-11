@@ -63,6 +63,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     request: SnapshotRequest,
     callback: SnapshotRequestCallback,
   ): void {
+    console.log(`[snapshot] request ${request.width}×${request.height}`);
     this.snapshots
       .get()
       .then((jpeg) => callback(undefined, jpeg))

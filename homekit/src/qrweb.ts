@@ -1,4 +1,5 @@
 import http from "http";
+import fs from "fs";
 import os from "os";
 import qrcode from "qrcode-terminal";
 
@@ -19,6 +20,7 @@ export class QrWebServer {
     private readonly pin: string,
     private readonly cameraName: string,
     private readonly port: number,
+    private readonly snapshotFile?: string,
   ) {}
 
   start(): this {
@@ -37,7 +39,15 @@ export class QrWebServer {
   }
 
   private listen(): void {
-    this.server = http.createServer((_req, res) => {
+    this.server = http.createServer((req, res) => {
+      if (req.url === "/snapshot" && this.snapshotFile) {
+        fs.readFile(this.snapshotFile, (err, data) => {
+          if (err) { res.writeHead(503); res.end("No snapshot yet"); return; }
+          res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "no-cache" });
+          res.end(data);
+        });
+        return;
+      }
       if (this.page) {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(this.page);
