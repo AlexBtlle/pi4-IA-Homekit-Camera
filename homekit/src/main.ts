@@ -49,7 +49,7 @@ function main(): void {
     .setCharacteristic(Characteristic.SerialNumber, pairing.username)
     .setCharacteristic(Characteristic.FirmwareRevision, "2.0.0");
 
-  const snapshots = new SnapshotProvider(config.rtspUrl, config.width, config.height);
+  const snapshots = new SnapshotProvider(config.rtspUrl);
   const streamingDelegate = new StreamingDelegate(config.rtspUrl, snapshots);
   const recordingDelegate = new RecordingDelegate(config.rtspUrl);
 

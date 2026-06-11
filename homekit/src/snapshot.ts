@@ -15,14 +15,14 @@ import path from "path";
  * no pipeline, no MJPEG parsing, no Buffer pool gymnastics.
  */
 export class SnapshotProvider {
-  readonly snapshotFile: string;
+  // Snapshot resolution: kept small so JPEG encoding is fast on the Pi Zero.
+  private static readonly SNAP_W = 640;
+  private static readonly SNAP_H = 360;
   private stopped = false;
 
-  constructor(
-    private readonly rtspUrl: string,
-    private readonly width: number,
-    private readonly height: number,
-  ) {
+  readonly snapshotFile: string;
+
+  constructor(private readonly rtspUrl: string) {
     this.snapshotFile = path.join(os.tmpdir(), "pi4cam-snapshot.jpg");
   }
 
@@ -48,7 +48,7 @@ export class SnapshotProvider {
     } catch {
       // File not yet created (first grab still in progress).
       return new Promise((resolve, reject) => {
-        const deadline = Date.now() + 10_000;
+        const deadline = Date.now() + 20_000;
         const id = setInterval(async () => {
           try {
             const buf = await fs.readFile(this.snapshotFile);
@@ -70,10 +70,17 @@ export class SnapshotProvider {
     const tmp = this.snapshotFile + ".tmp";
 
     return new Promise((resolve) => {
+      const t0 = Date.now();
       const ff = spawn("ffmpeg", [
         "-hide_banner",
         "-loglevel",
         "warning",
+        // Suppress buffering so the first video frame is output immediately
+        // instead of waiting for several seconds of stream data.
+        "-fflags",
+        "nobuffer",
+        "-flags",
+        "low_delay",
         "-rtsp_transport",
         "tcp",
         "-i",
@@ -81,7 +88,7 @@ export class SnapshotProvider {
         "-frames:v",
         "1",
         "-vf",
-        `scale=${this.width}:${this.height}`,
+        `scale=${SnapshotProvider.SNAP_W}:${SnapshotProvider.SNAP_H}`,
         "-f",
         "image2",
         "-y",
@@ -100,7 +107,7 @@ export class SnapshotProvider {
         if (code === 0) {
           try {
             await fs.rename(tmp, this.snapshotFile);
-            console.log("[snapshot] frame captured");
+            console.log(`[snapshot] frame captured in ${Date.now() - t0} ms`);
           } catch (e) {
             console.error("[snapshot] rename failed:", e);
           }
