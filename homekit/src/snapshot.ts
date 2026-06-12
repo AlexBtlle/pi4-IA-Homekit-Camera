@@ -16,7 +16,7 @@ import path from "path";
 export class SnapshotProvider {
   readonly snapshotFile: string;
   private grabbing = false;
-  private static readonly STALE_MS = 10_000;
+  private static readonly STALE_MS = 1_000;
   private static readonly SNAP_W = 640;
   private static readonly SNAP_H = 360;
 
