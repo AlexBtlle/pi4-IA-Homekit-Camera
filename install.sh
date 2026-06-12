@@ -8,11 +8,6 @@ SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_USER="${SUDO_USER:-pi}"
 
 MEDIAMTX_VERSION_OVERRIDE="${MEDIAMTX_VERSION:-}"
-# MobileNet-SSD (Caffe) for OpenCV DNN person detection — committed directly
-# in this repo (not behind a Google Drive link), so it is curl-able and stable.
-DNN_BASE_URL="https://raw.githubusercontent.com/djmv/MobilNet_SSD_opencv/master"
-DNN_PROTOTXT_URL="${DNN_BASE_URL}/MobileNetSSD_deploy.prototxt"
-DNN_CAFFEMODEL_URL="${DNN_BASE_URL}/MobileNetSSD_deploy.caffemodel"
 
 case "$(uname -m)" in
     aarch64) MEDIAMTX_ARCH="linux_arm64v8" ;;
@@ -67,8 +62,7 @@ apt-get install -y \
 
 # numpy and opencv (cv2) come from apt above — prebuilt pip wheels are
 # unreliable across Raspberry Pi OS / Python versions. The venv accesses
-# them via --system-site-packages. No fragile ML runtime (tflite) needed:
-# person detection runs through OpenCV's built-in DNN module.
+# them via --system-site-packages.
 
 # -----------------------------------------------------------------------
 # 2. Node.js 22 (for the HAP-NodeJS HomeKit app)
@@ -92,7 +86,7 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# 4. mediamtx
+# 3. mediamtx
 # -----------------------------------------------------------------------
 if [[ ! -f /usr/local/bin/mediamtx ]]; then
     if [[ -z "${MEDIAMTX_VERSION_OVERRIDE}" ]]; then
@@ -133,10 +127,10 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# 5. Project files
+# 4. Project files
 # -----------------------------------------------------------------------
 info "Deploying project files to ${INSTALL_DIR}..."
-mkdir -p "${INSTALL_DIR}"/{camera,models,homekit}
+mkdir -p "${INSTALL_DIR}"/{camera,homekit}
 
 # Python sources (the camera pipeline + detection)
 cp -r "${SRC_DIR}/camera/." "${INSTALL_DIR}/camera/"
@@ -160,26 +154,7 @@ if [[ ! -f "${INSTALL_DIR}/config.yaml" ]]; then
 fi
 
 # -----------------------------------------------------------------------
-# 6. MobileNet-SSD detection model (OpenCV DNN)
-# -----------------------------------------------------------------------
-PROTOTXT_PATH="${INSTALL_DIR}/models/MobileNetSSD_deploy.prototxt"
-CAFFEMODEL_PATH="${INSTALL_DIR}/models/MobileNetSSD_deploy.caffemodel"
-if [[ ! -f "${CAFFEMODEL_PATH}" ]]; then
-    info "Downloading MobileNet-SSD detection model..."
-    curl -fsSL "${DNN_PROTOTXT_URL}"   -o "${PROTOTXT_PATH}"
-    curl -fsSL "${DNN_CAFFEMODEL_URL}" -o "${CAFFEMODEL_PATH}"
-    # Sanity check: caffemodel must be a real binary (~23 MB), not an HTML 404
-    if [[ ! -s "${CAFFEMODEL_PATH}" ]] || [[ "$(stat -c%s "${CAFFEMODEL_PATH}")" -lt 1000000 ]]; then
-        rm -f "${CAFFEMODEL_PATH}"
-        fatal "MobileNet-SSD model download failed or incomplete."
-    fi
-    info "MobileNet-SSD model installed."
-else
-    info "MobileNet-SSD model already present, skipping."
-fi
-
-# -----------------------------------------------------------------------
-# 7. Python virtual environment
+# 5. Python virtual environment
 # -----------------------------------------------------------------------
 VENV="${INSTALL_DIR}/venv"
 if [[ ! -d "${VENV}" ]]; then
@@ -192,7 +167,7 @@ fi
 info "Python dependencies installed."
 
 # -----------------------------------------------------------------------
-# 8. HomeKit app: build + pairing secrets (unique MAC + PIN + setup ID)
+# 6. HomeKit app: build + pairing secrets (unique MAC + PIN + setup ID)
 # -----------------------------------------------------------------------
 info "Building the HomeKit app (npm ci + tsc)..."
 pushd "${INSTALL_DIR}/homekit" >/dev/null
@@ -242,7 +217,7 @@ chown -R "${RUN_USER}:${RUN_USER}" "${INSTALL_DIR}"
 usermod -aG video "${RUN_USER}" || true
 
 # -----------------------------------------------------------------------
-# 9. systemd services
+# 7. systemd services
 # -----------------------------------------------------------------------
 info "Installing systemd services..."
 
