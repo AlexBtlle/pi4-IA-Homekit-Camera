@@ -76,8 +76,7 @@ export class Prebuffer {
   private restartTimer?: NodeJS.Timeout;
   private restartDelay = 1000;
 
-  // Retain a little more than the largest prebuffer HomeKit will ask for.
-  private static readonly RETAIN_MS = 12000;
+  private static readonly RETAIN_MS = 6000;
 
   constructor(private readonly rtspUrl: string) {}
 
