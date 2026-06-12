@@ -31,6 +31,9 @@ No Homebridge, no plugins, no cloud account, no web dashboard. The camera pairs 
 
 > **Pi Zero 2 W**: fully supported, including HKSV. Measured on a real unit: ~194 MB RAM
 > idle, ~212 MB with an active live stream (out of 512 MB) — no swap, no tuning needed.
+> A **heatsink** is strongly recommended: the SoC runs hot under continuous load.
+> Without one, expect 80–86 °C; with a full-board heatsink and a few ventilation holes
+> in the enclosure, temperatures drop to ~65 °C or below.
 
 ## Install
 
