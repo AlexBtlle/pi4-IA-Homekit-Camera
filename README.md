@@ -2,10 +2,10 @@
 
 **🇫🇷 [Version française](README.fr.md)**
 
-Turn a Raspberry Pi 4 and a camera module into a **native HomeKit Secure Video camera** — like a €300 camera fresh out of the box.
+Turn a Raspberry Pi 4 and a camera module into a **native HomeKit Secure Video camera** like a camera fresh out of the box.
 
 ```
-sudo bash install.sh  →  scan the QR code  →  done.
+Install  →  scan the QR code  →  done.
 ```
 
 No Homebridge, no plugins, no cloud account, no web dashboard. The camera pairs directly with the Home app, streams live video, detects motion, and records HKSV clips to iCloud that start *before* the motion happened.
