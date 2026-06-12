@@ -103,7 +103,6 @@ Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Après modificat
 | `homekit.motion_timeout` | 10 | Durée (s) d'activation du capteur de mouvement |
 | `detection.min_motion_area` | 1500 | Sensibilité du mouvement (plus petit = plus sensible). Valeur par défaut calibrée pour les humains (~3 000 px à 320×240). Réduire à ~600 pour détecter aussi les chats/chiens. |
 | `detection.cooldown` | 30 | Délai (s) entre deux déclenchements |
-| `detection.require_person` | false | Filtre personne local optionnel (MobileNet-SSD) avant déclenchement |
 
 Les secrets d'appairage (PIN, setup ID, MAC de l'accessoire) sont générés une seule fois par l'installateur dans `/opt/pi4cam/homekit/pairing.json` et survivent aux réinstallations — mettre à jour le code ne nécessite jamais de ré-appairage.
 

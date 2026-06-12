@@ -4,10 +4,9 @@ camera:
   fps: 30
   bitrate: 4000000
   rotation: 0        # 0 | 90 | 180 | 270
-  hflip: false
-  vflip: false
   lores_width: 320
   lores_height: 240
+  snapshot_interval: 2      # seconds between JPEG snapshots written to /tmp
 
 rtsp:
   port: 8554         # mediamtx RTSP port
@@ -24,17 +23,6 @@ detection:
   enabled: true
   mog2_history: 500
   mog2_var_threshold: 40
-  min_motion_area: 1500
+  min_motion_area: 1500      # tuned for humans; reduce to ~600 for cats/dogs
   cooldown: 30               # seconds before re-triggering after a detection
   analysis_fps: 10           # MOG2 analysis rate; reduce to save CPU (Pi Zero 2W: 10)
-
-  # Person classification is handled by HomeKit Secure Video on the Apple TV /
-  # HomePod (Apple's on-device AI: People / Animals / Vehicles / Packages).
-  # The Pi just reports motion, which is reliable and low-cost.
-  #
-  # Set require_person: true to ALSO run a local MobileNet-SSD person filter
-  # before triggering (reduces Apple TV wake-ups, works without iCloud). It is
-  # off by default because the grayscale lores frame makes it unreliable.
-  require_person: false
-  person_confidence: 0.55
-  debug: false               # log motion area + person confidence for tuning

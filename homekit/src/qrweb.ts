@@ -56,10 +56,7 @@ export class QrWebServer {
   }
 
   private buildPage(ascii: string): string {
-    const escapedAscii = ascii
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+    const escapedAscii = esc(ascii);
 
     const pin = this.pin.replace(/-/g, "‑"); // non-breaking hyphens
 

@@ -102,7 +102,6 @@ Everything lives in one file: [`config.yaml`](config.yaml). After editing, re-ru
 | `homekit.motion_timeout` | 10 | Seconds the motion sensor stays active |
 | `detection.min_motion_area` | 1500 | Motion sensitivity (smaller = more sensitive). Default is tuned for humans (~3 000 px at 320×240). Reduce to ~600 to also detect cats/dogs. |
 | `detection.cooldown` | 30 | Seconds between two motion triggers |
-| `detection.require_person` | false | Optional local person filter (MobileNet-SSD) before triggering |
 
 The pairing secrets (PIN, setup ID, accessory MAC) are generated once by the installer into `/opt/pi4cam/homekit/pairing.json` and survive re-installs — updating the code never requires re-pairing.
 
