@@ -1,9 +1,13 @@
 import os
+import time
 import threading
 import logging
 import numpy as np
+import cv2
 
 logger = logging.getLogger(__name__)
+
+SNAPSHOT_PATH = "/tmp/pi4cam-snapshot.jpg"
 
 
 class CameraManager:
@@ -14,6 +18,9 @@ class CameraManager:
     YUV420 stream (consumed by PresenceDetector). The H264 encoder runs from
     start() onwards — no on-demand start/stop needed since mediamtx relays
     the stream and the HomeKit app reads from mediamtx.
+
+    Also writes a JPEG snapshot to SNAPSHOT_PATH every snapshot_interval
+    seconds using the main YUV420 frame directly — no H264 decode needed.
     """
 
     _instance = None
@@ -35,6 +42,7 @@ class CameraManager:
         self._rotation = int(self._cfg.get("rotation", 0))
         self._lores_w = int(self._cfg.get("lores_width", 320))
         self._lores_h = int(self._cfg.get("lores_height", 240))
+        self._snapshot_interval = float(self._cfg.get("snapshot_interval", 2))
 
         self._picam2 = None
         self._encoder = None
@@ -44,6 +52,9 @@ class CameraManager:
 
         self._lores_condition = threading.Condition()
         self._latest_lores_frame: np.ndarray | None = None
+
+        self._last_snapshot: float = 0.0
+        self._snapshot_writing: bool = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -91,9 +102,10 @@ class CameraManager:
         )
 
         logger.info(
-            "Picamera2 started: %dx%d @ %d fps | lores %dx%d | bitrate %d",
+            "Picamera2 started: %dx%d @ %d fps | lores %dx%d | bitrate %d | snapshot every %.0fs",
             self._width, self._height, self._fps,
             self._lores_w, self._lores_h, self._bitrate,
+            self._snapshot_interval,
         )
 
     def get_h264_read_fd(self) -> int:
@@ -140,3 +152,30 @@ class CameraManager:
         with self._lores_condition:
             self._latest_lores_frame = y_plane
             self._lores_condition.notify_all()
+
+        if (self._snapshot_interval > 0
+                and not self._snapshot_writing
+                and time.monotonic() - self._last_snapshot >= self._snapshot_interval):
+            self._last_snapshot = time.monotonic()
+            self._snapshot_writing = True
+            main_arr = request.make_array("main").copy()
+            threading.Thread(
+                target=self._write_snapshot,
+                args=(main_arr,),
+                daemon=True,
+            ).start()
+
+    def _write_snapshot(self, arr: np.ndarray) -> None:
+        try:
+            bgr = cv2.cvtColor(arr, cv2.COLOR_YUV2BGR_I420)
+            thumb = cv2.resize(bgr, (640, 360), interpolation=cv2.INTER_LINEAR)
+            ok, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ok:
+                tmp = SNAPSHOT_PATH + ".tmp"
+                with open(tmp, "wb") as f:
+                    f.write(buf.tobytes())
+                os.replace(tmp, SNAPSHOT_PATH)
+        except Exception:
+            logger.debug("Snapshot write failed", exc_info=True)
+        finally:
+            self._snapshot_writing = False

@@ -6,6 +6,7 @@ camera:
   rotation: 0        # 0 | 90 | 180 | 270
   lores_width: 320
   lores_height: 240
+  snapshot_interval: 2      # seconds between JPEG snapshots written to /tmp
 
 rtsp:
   port: 8554         # mediamtx RTSP port
