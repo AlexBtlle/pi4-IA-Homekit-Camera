@@ -56,6 +56,12 @@ class CameraManager:
         self._last_snapshot: float = 0.0
         self._snapshot_writing: bool = False
 
+        self._last_frame_time: float = 0.0
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_run, daemon=True, name="frame-watchdog"
+        )
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -95,11 +101,13 @@ class CameraManager:
             bitrate=self._bitrate, iperiod=self._fps * 4
         )
 
+        self._last_frame_time = time.monotonic()
         self._picam2.start()
         self._picam2.start_encoder(
             self._encoder,
             FileOutput(os.fdopen(self._pipe_w, "wb")),
         )
+        self._watchdog_thread.start()
 
         logger.info(
             "Picamera2 started: %dx%d @ %d fps | lores %dx%d | bitrate %d | snapshot every %.0fs",
@@ -123,6 +131,7 @@ class CameraManager:
             return self._latest_lores_frame
 
     def stop(self) -> None:
+        self._watchdog_stop.set()
         if self._encoder is not None:
             try:
                 self._picam2.stop_encoder()
@@ -145,8 +154,20 @@ class CameraManager:
     # Internal
     # ------------------------------------------------------------------
 
+    def _watchdog_run(self) -> None:
+        """Exit the process if no frame arrives within 10 s (libcamera timeout)."""
+        timeout = 10.0
+        while not self._watchdog_stop.wait(timeout=2.0):
+            if time.monotonic() - self._last_frame_time > timeout:
+                logger.critical(
+                    "Frame watchdog: no frame for %.0f s — restarting (os._exit)",
+                    timeout,
+                )
+                os._exit(1)
+
     def _lores_callback(self, request) -> None:
         """Called by picamera2's capture thread on every frame. Must be fast."""
+        self._last_frame_time = time.monotonic()
         arr = request.make_array("lores")
         y_plane = arr[:self._lores_h, :self._lores_w].copy()
         with self._lores_condition:

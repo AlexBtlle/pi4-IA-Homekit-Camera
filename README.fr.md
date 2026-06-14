@@ -2,10 +2,10 @@
 
 **🇬🇧 [English version](README.md)**
 
-Transformez un Raspberry Pi 4 et un module caméra en **caméra HomeKit Secure Video native** — comme une caméra à 300 € qui sort de sa boîte.
+Transformez un Raspberry Pi 4 et un module caméra en **caméra HomeKit Secure Video native** comme une caméra qui sort de sa boîte.
 
 ```
-sudo bash install.sh  →  scanner le QR code  →  c'est fini.
+Installer →  scanner le QR code  →  c'est fini.
 ```
 
 Pas de Homebridge, pas de plugin, pas de compte cloud, pas d'interface web. La caméra s'appaire directement avec l'app Maison, diffuse en direct, détecte le mouvement et enregistre dans iCloud des clips HKSV qui commencent *avant* le mouvement.
@@ -32,6 +32,9 @@ Pas de Homebridge, pas de plugin, pas de compte cloud, pas d'interface web. La c
 > **Pi Zero 2 W** : entièrement supporté, HKSV compris. Mesuré sur une vraie unité :
 > ~194 Mo de RAM au repos, ~212 Mo avec un flux en direct actif (sur 512 Mo) —
 > pas de swap, aucun réglage nécessaire.
+> Un **dissipateur thermique** est fortement recommandé : le SoC chauffe sous charge continue.
+> Sans dissipateur, comptez 80–86 °C ; avec un dissipateur couvrant toute la carte et
+> quelques trous de ventilation dans le boîtier, la température descend à ~65 °C ou moins.
 
 ## Installation
 
