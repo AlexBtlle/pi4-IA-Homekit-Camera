@@ -16,7 +16,7 @@ No Homebridge, no plugins, no cloud account, no web dashboard. The camera pairs 
 - **HomeKit Secure Video** — motion-triggered recordings stored in iCloud, viewable directly in the Home app's timeline. A rolling 4-second prebuffer means every clip starts before the motion event.
 - **Smart classification** — People / Animals / Vehicles / Packages detection is done by your Apple home hub (Apple TV / HomePod), exactly like commercial HKSV cameras. The Pi just reports motion, cheaply and reliably.
 - **Rich notifications** — motion alerts with a snapshot on your iPhone.
-- **Lightweight** — ~330 MB RAM total, low CPU load, three small systemd services.
+- **Lightweight** — ~280 MB RAM total, low CPU load, three small systemd services.
 - **Private** — everything runs on your Pi. The only cloud involved is your own iCloud (for HKSV recordings, end-to-end encrypted by Apple).
 
 ## Requirements
@@ -29,11 +29,10 @@ No Homebridge, no plugins, no cloud account, no web dashboard. The camera pairs 
 | **Apple side** | iPhone + a home hub (Apple TV 4K or HomePod) |
 | **For recordings** | iCloud+ subscription (any tier — HKSV recordings don't count against your storage) |
 
-> **Pi Zero 2 W**: fully supported, including HKSV. Measured on a real unit: ~194 MB RAM
-> idle, ~212 MB with an active live stream (out of 512 MB) — no swap, no tuning needed.
+> **Pi Zero 2 W**: fully supported, including HKSV. Measured on a real unit: ~260 MB RAM
+> idle, ~280 MB with an active live stream (out of 512 MB) — no swap, no tuning needed.
 > A **heatsink** is strongly recommended: the SoC runs hot under continuous load.
-> Without one, expect 80–86 °C; with a full-board heatsink and a few ventilation holes
-> in the enclosure, temperatures drop to ~65 °C or below.
+> Without one, expect 70–75 °C; with a full-board heatsink and a few ventilation holes
 
 ## Install
 
@@ -119,7 +118,6 @@ journalctl -u mediamtx -f          # RTSP server
 - **Camera not found when pairing** — both the iPhone and the Pi must be on the same network; check that `avahi-daemon` is running (mDNS).
 - **"Recording Options" missing in the Home app** — the accessory's capabilities are cached at pairing time. Remove the camera from the Home app and pair it again.
 - **First snapshot is slow** — normal: with a keyframe every 4 s, the first JPEG can take a few seconds. It's cached afterwards.
-- **Check the raw stream** — `ffprobe rtsp://<pi-ip>:8554/camera` should show `h264, 1920x1080`.
 
 ## Uninstall
 
