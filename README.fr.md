@@ -16,7 +16,7 @@ Pas de Homebridge, pas de plugin, pas de compte cloud, pas d'interface web. La c
 - **HomeKit Secure Video** — enregistrements déclenchés par le mouvement, stockés dans iCloud, lisibles directement dans l'historique de l'app Maison. Un prébuffer glissant de 4 secondes fait démarrer chaque clip avant l'événement.
 - **Classification intelligente** — la détection Personnes / Animaux / Véhicules / Colis est faite par votre concentrateur Apple (Apple TV / HomePod), exactement comme les caméras HKSV du commerce. Le Pi se contente de signaler le mouvement, de façon fiable et économe.
 - **Notifications riches** — alertes de mouvement avec snapshot sur l'iPhone.
-- **Léger** — ~330 Mo de RAM au total, faible charge CPU, trois petits services systemd.
+- **Léger** — ~280 Mo de RAM au total, faible charge CPU, trois petits services systemd.
 - **Privé** — tout tourne sur votre Pi. Le seul cloud impliqué est votre propre iCloud (pour les enregistrements HKSV, chiffrés de bout en bout par Apple).
 
 ## Prérequis
@@ -30,10 +30,10 @@ Pas de Homebridge, pas de plugin, pas de compte cloud, pas d'interface web. La c
 | **Pour les enregistrements** | Abonnement iCloud+ (quel que soit le palier — les clips HKSV ne comptent pas dans votre stockage) |
 
 > **Pi Zero 2 W** : entièrement supporté, HKSV compris. Mesuré sur une vraie unité :
-> ~194 Mo de RAM au repos, ~212 Mo avec un flux en direct actif (sur 512 Mo) —
+> ~260 Mo de RAM au repos, ~280 Mo avec un flux en direct actif (sur 512 Mo) —
 > pas de swap, aucun réglage nécessaire.
 > Un **dissipateur thermique** est fortement recommandé : le SoC chauffe sous charge continue.
-> Sans dissipateur, comptez 80–86 °C ; avec un dissipateur couvrant toute la carte et
+> Sans dissipateur, comptez 70-75 °C ; avec un dissipateur couvrant toute la carte et
 > quelques trous de ventilation dans le boîtier, la température descend à ~65 °C ou moins.
 
 ## Installation
@@ -120,7 +120,6 @@ journalctl -u mediamtx -f          # serveur RTSP
 - **Caméra introuvable à l'appairage** — l'iPhone et le Pi doivent être sur le même réseau ; vérifiez qu'`avahi-daemon` tourne (mDNS).
 - **« Options d'enregistrement » absent dans Maison** — les capacités de l'accessoire sont mises en cache au moment de l'appairage. Supprimez la caméra de l'app Maison et ré-appairez-la.
 - **Premier snapshot lent** — normal : avec un keyframe toutes les 4 s, le premier JPEG peut prendre quelques secondes. Il est ensuite mis en cache.
-- **Vérifier le flux brut** — `ffprobe rtsp://<ip-du-pi>:8554/camera` doit afficher `h264, 1920x1080`.
 
 ## Désinstallation
 
