@@ -1,32 +1,25 @@
+import { promises as fs } from "fs";
 import http from "http";
+import net from "net";
 import os from "os";
 import qrcode from "qrcode-terminal";
+import type { MotionService } from "./motion";
 
-/**
- * Tiny web server that serves a single HTML page with the HomeKit pairing QR
- * code and PIN — accessible from any browser on the local network at
- * http://<hostname>.local:<port> or http://<ip>:<port>.
- *
- * Lives inside the pi4cam-homekit process (zero extra service, zero extra RAM).
- * The page is built once at startup and served statically from memory.
- */
 export class QrWebServer {
   private server?: http.Server;
-  private page?: string;
+  private _qrBlock?: string;
 
   constructor(
     private readonly setupUri: string,
     private readonly pin: string,
     private readonly cameraName: string,
     private readonly port: number,
+    private readonly motionService?: MotionService,
   ) {}
 
   start(): this {
-    // Build the page asynchronously (qrcode-terminal uses a callback), then
-    // open the server. Any request that arrives before the page is ready gets
-    // a 503 — in practice this window is a few milliseconds.
     qrcode.generate(this.setupUri, { small: true }, (ascii: string) => {
-      this.page = this.buildPage(ascii);
+      this._qrBlock = `<pre>${esc(ascii)}</pre>`;
       this.listen();
     });
     return this;
@@ -37,14 +30,15 @@ export class QrWebServer {
   }
 
   private listen(): void {
-    this.server = http.createServer((req, res) => {
-      if (this.page) {
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(this.page);
-      } else {
+    this.server = http.createServer(async (req, res) => {
+      if (!this._qrBlock) {
         res.writeHead(503);
         res.end("Starting…");
+        return;
       }
+      const page = await this.buildPage();
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(page);
     });
 
     this.server.listen(this.port, "0.0.0.0", () => {
@@ -55,10 +49,25 @@ export class QrWebServer {
     });
   }
 
-  private buildPage(ascii: string): string {
-    const escapedAscii = esc(ascii);
+  private async buildPage(): Promise<string> {
+    const pin = this.pin.replace(/-/g, "‑");
 
-    const pin = this.pin.replace(/-/g, "‑"); // non-breaking hyphens
+    const [mediamtxOk, snapshotFresh, cpuTemp] = await Promise.all([
+      this._mediamtxOk(),
+      this._snapshotFresh(),
+      this._cpuTemp(),
+    ]);
+
+    const uptime = formatUptime(process.uptime());
+    const motionStats = this.motionService?.getStats();
+
+    const dot = (ok: boolean) => ok ? "🟢" : "🔴";
+
+    let motionLine = "Motion events: 0";
+    if (motionStats && motionStats.triggerCount > 0) {
+      const ago = formatAgo(motionStats.lastTrigger!);
+      motionLine = `Motion events: ${motionStats.triggerCount} — last ${ago}`;
+    }
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -114,6 +123,27 @@ export class QrWebServer {
     }
     .hint { color: #aeaeb2; font-size: .82rem; text-align: center; line-height: 1.5; }
     .hint strong { color: #f2f2f7; }
+    .status {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: .55rem;
+      border-top: 1px solid #3a3a3c;
+      padding-top: 1.25rem;
+    }
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: .85rem;
+    }
+    .status-row .label { color: #aeaeb2; }
+    .status-row .value { color: #f2f2f7; }
+    .divider { border: none; border-top: 1px solid #3a3a3c; margin: .25rem 0; }
+    .motion-line {
+      font-size: .82rem;
+      color: #aeaeb2;
+      text-align: center;
+    }
     footer { color: #636366; font-size: .75rem; }
   </style>
 </head>
@@ -123,17 +153,53 @@ export class QrWebServer {
     <p>HomeKit pairing</p>
   </header>
   <div class="card">
-    <pre>${escapedAscii}</pre>
+    ${this._qrBlock}
     <p class="pin-label">Setup code</p>
     <p class="pin">${esc(pin)}</p>
     <p class="hint">
       Open <strong>Home</strong> → <strong>+</strong> → <strong>Add Accessory</strong>
       and scan the QR code above, or tap <em>More options…</em> and enter the code.
     </p>
+    <div class="status">
+      <div class="status-row"><span class="label">${dot(true)} pi4cam-homekit</span><span class="value">uptime ${esc(uptime)}</span></div>
+      <div class="status-row"><span class="label">${dot(snapshotFresh)} pi4cam</span><span class="value">${snapshotFresh ? "snapshot fresh" : "snapshot stale"}</span></div>
+      <div class="status-row"><span class="label">${dot(mediamtxOk)} mediamtx</span><span class="value">RTSP :8554</span></div>
+      <hr class="divider">
+      <div class="status-row"><span class="label">🌡 CPU</span><span class="value">${esc(cpuTemp)}</span></div>
+      <p class="motion-line">${esc(motionLine)}</p>
+    </div>
   </div>
   <footer>pi4-IA-Homekit-Camera</footer>
 </body>
 </html>`;
+  }
+
+  private async _cpuTemp(): Promise<string> {
+    try {
+      const raw = await fs.readFile("/sys/class/thermal/thermal_zone0/temp", "utf8");
+      return (parseInt(raw, 10) / 1000).toFixed(1) + "°C";
+    } catch {
+      return "N/A";
+    }
+  }
+
+  private _mediamtxOk(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const sock = new net.Socket();
+      sock.setTimeout(500);
+      sock.connect(8554, "127.0.0.1", () => { sock.destroy(); resolve(true); });
+      sock.on("error", () => resolve(false));
+      sock.on("timeout", () => { sock.destroy(); resolve(false); });
+    });
+  }
+
+  private async _snapshotFresh(): Promise<boolean> {
+    try {
+      const stat = await fs.stat("/tmp/pi4cam-snapshot.jpg");
+      return Date.now() - stat.mtimeMs < 15_000;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -150,4 +216,21 @@ function localIP(): string {
     }
   }
   return "127.0.0.1";
+}
+
+function formatUptime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${Math.floor(seconds)}s`;
+}
+
+function formatAgo(date: Date): string {
+  const sec = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const h = Math.floor(min / 60);
+  return `${h}h ago`;
 }

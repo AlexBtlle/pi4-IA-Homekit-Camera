@@ -153,6 +153,7 @@ function main(): void {
     pairing.pincode,
     config.cameraName,
     config.qrWebPort,
+    motion,
   ).start();
 
   motion.start();
