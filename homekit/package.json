@@ -19,6 +19,9 @@
     "js-yaml": "^4.1.0",
     "qrcode-terminal": "^0.12.0"
   },
+  "overrides": {
+    "node-persist": "^4.0.0"
+  },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
