@@ -1,3 +1,4 @@
+import os
 import subprocess
 import threading
 import time
@@ -50,18 +51,21 @@ class RtspPublisher:
                     ],
                     pass_fds=(self._pipe_r_fd,),
                 )
-                self._proc.wait()
-                if self._stop_event.is_set():
-                    break
-                logger.warning(
-                    "ffmpeg exited (code %d), restarting in %ds",
-                    self._proc.returncode, delay,
-                )
-                time.sleep(delay)
-                delay = min(delay * 2, _MAX_BACKOFF)
+            except FileNotFoundError:
+                logger.critical("ffmpeg not found — cannot publish RTSP stream")
+                os._exit(1)
             except Exception:
-                logger.exception("RtspPublisher error")
+                logger.exception("RtspPublisher: failed to start ffmpeg")
                 time.sleep(delay)
                 delay = min(delay * 2, _MAX_BACKOFF)
-            else:
-                delay = 1  # reset backoff on clean exit followed by restart
+                continue
+
+            self._proc.wait()
+            if self._stop_event.is_set():
+                break
+            logger.warning(
+                "ffmpeg exited (code %d), restarting in %ds",
+                self._proc.returncode, delay,
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, _MAX_BACKOFF)

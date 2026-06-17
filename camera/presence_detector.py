@@ -70,23 +70,34 @@ class PresenceDetector:
             detectShadows=self._mog2_shadows,
         )
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+
+        # Warmup: feed MOG2 at full frame rate so the background model stabilises
+        # before we start triggering detections.
         warmup = self.WARMUP_FRAMES
-        logger.info("Detection loop running (MOG2 motion-only — HKSV classifies on the hub)")
-
-        while not self._stop_event.is_set():
+        logger.info(
+            "Detection loop starting — warmup %d frames then %.0f fps analysis",
+            warmup, 1.0 / self._frame_interval if self._frame_interval else 30,
+        )
+        while not self._stop_event.is_set() and warmup > 0:
             frame = self._camera_manager.get_lores_frame(timeout=1.0)
-            if frame is None:
-                continue
-
-            if warmup > 0:
+            if frame is not None:
                 mog2.apply(frame)
                 warmup -= 1
-                continue
 
-            now = time.monotonic()
-            if self._frame_interval > 0 and (now - self._last_analysis) < self._frame_interval:
+        logger.info("MOG2 warmup done — detection active")
+
+        # Detection: sleep for exactly frame_interval between analyses instead of
+        # waking on every camera frame (3× fewer wakeups at analysis_fps=10).
+        while not self._stop_event.is_set():
+            if self._frame_interval > 0:
+                if self._stop_event.wait(self._frame_interval):
+                    break
+                frame = self._camera_manager.get_lores_frame(timeout=0.1)
+            else:
+                frame = self._camera_manager.get_lores_frame(timeout=1.0)
+
+            if frame is None:
                 continue
-            self._last_analysis = now
 
             fg_mask = mog2.apply(frame)
             fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel)

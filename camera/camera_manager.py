@@ -1,4 +1,5 @@
 import os
+import queue
 import time
 import threading
 import logging
@@ -58,7 +59,10 @@ class CameraManager:
         self._latest_lores_frame: np.ndarray | None = None
 
         self._last_snapshot: float = 0.0
-        self._snapshot_writing: bool = False
+        self._snapshot_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=1)
+        self._snapshot_thread = threading.Thread(
+            target=self._snapshot_worker, daemon=True, name="snapshot-writer"
+        )
 
         self._last_frame_time: float = 0.0
         self._watchdog_stop = threading.Event()
@@ -133,6 +137,7 @@ class CameraManager:
             self._encoder,
             FileOutput(os.fdopen(self._pipe_w, "wb")),
         )
+        self._snapshot_thread.start()
         self._watchdog_thread.start()
 
         logger.info(
@@ -245,28 +250,31 @@ class CameraManager:
             self._lores_condition.notify_all()
 
         if (self._snapshot_interval > 0
-                and not self._snapshot_writing
                 and time.monotonic() - self._last_snapshot >= self._snapshot_interval):
             self._last_snapshot = time.monotonic()
-            self._snapshot_writing = True
             main_arr = request.make_array("main").copy()
-            threading.Thread(
-                target=self._write_snapshot,
-                args=(main_arr,),
-                daemon=True,
-            ).start()
+            try:
+                self._snapshot_queue.put_nowait(main_arr)
+            except queue.Full:
+                pass  # previous snapshot still pending — skip this frame
 
-    def _write_snapshot(self, arr: np.ndarray) -> None:
-        try:
-            bgr = cv2.cvtColor(arr, cv2.COLOR_YUV2BGR_I420)
-            thumb = cv2.resize(bgr, (1280, 720), interpolation=cv2.INTER_AREA)
-            ok, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 92])
-            if ok:
-                tmp = SNAPSHOT_PATH + ".tmp"
-                with open(tmp, "wb") as f:
-                    f.write(buf.tobytes())
-                os.replace(tmp, SNAPSHOT_PATH)
-        except Exception:
-            logger.debug("Snapshot write failed", exc_info=True)
-        finally:
-            self._snapshot_writing = False
+    def _snapshot_worker(self) -> None:
+        """Persistent worker: encodes and writes JPEG snapshots from the queue."""
+        while True:
+            try:
+                arr = self._snapshot_queue.get(timeout=2.0)
+            except queue.Empty:
+                if self._watchdog_stop.is_set():
+                    break
+                continue
+            try:
+                bgr = cv2.cvtColor(arr, cv2.COLOR_YUV2BGR_I420)
+                thumb = cv2.resize(bgr, (1280, 720), interpolation=cv2.INTER_AREA)
+                ok, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                if ok:
+                    tmp = SNAPSHOT_PATH + ".tmp"
+                    with open(tmp, "wb") as f:
+                        f.write(buf.tobytes())
+                    os.replace(tmp, SNAPSHOT_PATH)
+            except Exception:
+                logger.debug("Snapshot write failed", exc_info=True)

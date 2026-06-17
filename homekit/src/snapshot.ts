@@ -30,17 +30,20 @@ export class SnapshotProvider {
   private waitForFirst(): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       const deadline = Date.now() + 20_000;
-      const id = setInterval(async () => {
+      let delay = 100;
+      const attempt = async () => {
         try {
           resolve(await fs.readFile(this.snapshotFile));
-          clearInterval(id);
         } catch {
           if (Date.now() >= deadline) {
-            clearInterval(id);
             reject(new Error("snapshot not yet available"));
+          } else {
+            delay = Math.min(delay * 1.5, 2_000);
+            setTimeout(attempt, delay);
           }
         }
-      }, 200);
+      };
+      attempt();
     });
   }
 }
