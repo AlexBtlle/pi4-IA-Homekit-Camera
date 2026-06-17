@@ -108,7 +108,6 @@ Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Après modificat
 | `camera.bitrate` | 4000000 | Débit H264 (bit/s) |
 | `camera.rotation` | 0 | 0 / 90 / 180 / 270 |
 | `camera.full_fov` | true | Utilise toute la surface du capteur pour exploiter l'angle complet de l'objectif. La plupart des capteurs (IMX219, OV5647…) recadrent au centre en mode 1080p natif, ce qui rétrécit le champ ; cette option force un mode pleine vue (binned) puis redimensionne à la résolution de sortie. Mettre `false` pour le recadrage natif, plus net mais plus serré. |
-| `camera.full_res` | false | Capture à la résolution native complète du capteur (ex. 2592×1944 pour l'OV5647, 3280×2464 pour l'IMX219) et laisse l'ISP réduire à la résolution de sortie. Donne la meilleure netteté optique et le plein angle de vue, au prix d'environ 15 fps au lieu de 30. Remplace `full_fov`. |
 | `homekit.camera_name` | Pi Camera | Nom affiché dans l'app Maison |
 | `homekit.motion_timeout` | 10 | Durée (s) d'activation du capteur de mouvement |
 | `detection.min_motion_area` | 1500 | Sensibilité du mouvement (plus petit = plus sensible). Valeur par défaut calibrée pour les humains (~3 000 px à 320×240). Réduire à ~600 pour détecter aussi les chats/chiens. |

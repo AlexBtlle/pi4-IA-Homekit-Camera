@@ -44,7 +44,6 @@ class CameraManager:
         self._lores_h = int(self._cfg.get("lores_height", 240))
         self._snapshot_interval = float(self._cfg.get("snapshot_interval", 2))
         self._full_fov = bool(self._cfg.get("full_fov", True))
-        self._full_res = bool(self._cfg.get("full_res", False))
 
         self._picam2 = None
         self._encoder = None
@@ -86,14 +85,13 @@ class CameraManager:
         # their native 1080p mode, which narrows the lens's field of view.
         # Forcing a full-FOV (usually binned) sensor mode and letting the ISP
         # scale to the output size restores the full angle of the lens.
-        if self._full_fov or self._full_res:
+        if self._full_fov:
             mode = self._select_full_fov_mode()
             if mode is not None:
                 cfg_kwargs["raw"] = {"size": mode["size"]}
-                tag = "Full-res" if self._full_res else "Full-FOV"
                 logger.info(
-                    "%s sensor mode: %s @ %.0f fps (output scaled to %dx%d)",
-                    tag, mode["size"], mode.get("fps", 0), self._width, self._height,
+                    "Full-FOV sensor mode: %s @ %.0f fps (output scaled to %dx%d)",
+                    mode["size"], mode.get("fps", 0), self._width, self._height,
                 )
 
         video_cfg = self._picam2.create_video_configuration(**cfg_kwargs)
@@ -194,12 +192,6 @@ class CameraManager:
 
         max_crop_w = max(m["crop_limits"][2] for m in modes)
         full = [m for m in modes if m["crop_limits"][2] == max_crop_w]
-
-        if self._full_res:
-            # Pick the highest native-resolution full-FOV mode; fps will drop to
-            # whatever the sensor supports at full resolution (~15 fps typical).
-            return max(full, key=lambda m: m["size"][0])
-
         usable = [m for m in full if m.get("fps", 0) >= self._fps]
         return max(usable or full, key=lambda m: m["size"][0])
 
