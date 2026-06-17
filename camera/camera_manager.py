@@ -97,9 +97,11 @@ class CameraManager:
             mode = self._select_full_fov_mode()
             if mode is not None:
                 cfg_kwargs["raw"] = {"size": mode["size"]}
+                src_w = mode["size"][0]
+                direction = "↓ downscale" if src_w >= self._width else "↑ upscale"
                 logger.info(
-                    "Full-FOV sensor mode: %s @ %.0f fps (output scaled to %dx%d)",
-                    mode["size"], mode.get("fps", 0), self._width, self._height,
+                    "Full-FOV sensor mode: %s @ %.0f fps %s → %dx%d",
+                    mode["size"], mode.get("fps", 0), direction, self._width, self._height,
                 )
 
         video_cfg = self._picam2.create_video_configuration(**cfg_kwargs)
@@ -180,16 +182,21 @@ class CameraManager:
 
     def _select_full_fov_mode(self):
         """
-        Pick the sensor mode that reads the *full* sensor area (full field of
-        view), preferring the highest-resolution one that still sustains the
-        configured frame rate.
+        Pick the best full-FOV sensor mode using a three-tier priority:
 
-        Sensor modes expose ``crop_limits`` (the sensor rectangle they read);
-        the full-FOV modes are the ones with the widest crop. Among those we
-        keep the modes fast enough for ``self._fps`` and take the sharpest.
-        Returns None if sensor modes can't be read (falls back to the default
-        cropped readout).
+        1. Source resolution >= output resolution (true ISP downscale = supersampling)
+           AND fps >= configured fps.
+        2. Same downscale condition but fps >= MIN_FPS (25) — accepts a slight fps
+           drop when the sensor offers a sharper high-res mode (e.g. IMX219 3280×1848
+           @ 28 fps, IMX708 2304×1296 @ 56 fps).
+        3. Fastest full-FOV binned mode at configured fps (fallback for sensors with
+           no downscale path, e.g. OV5647 → 1296×972 @ 47 fps).
+
+        "Full-FOV" means the widest crop_limits[2] across all sensor modes.
+        Returns None on error (falls back to the default cropped readout).
         """
+        MIN_FPS = 25
+
         try:
             modes = self._picam2.sensor_modes
         except Exception:
@@ -200,6 +207,20 @@ class CameraManager:
 
         max_crop_w = max(m["crop_limits"][2] for m in modes)
         full = [m for m in modes if m["crop_limits"][2] == max_crop_w]
+
+        # Tier 1: true downscale at target fps
+        tier1 = [m for m in full
+                 if m["size"][0] >= self._width and m.get("fps", 0) >= self._fps]
+        if tier1:
+            return max(tier1, key=lambda m: m["size"][0])
+
+        # Tier 2: true downscale, slightly below target fps but above floor
+        tier2 = [m for m in full
+                 if m["size"][0] >= self._width and m.get("fps", 0) >= MIN_FPS]
+        if tier2:
+            return max(tier2, key=lambda m: m["size"][0])
+
+        # Tier 3: best binned mode at target fps (upscale fallback)
         usable = [m for m in full if m.get("fps", 0) >= self._fps]
         return max(usable or full, key=lambda m: m["size"][0])
 
