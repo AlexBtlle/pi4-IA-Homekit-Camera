@@ -124,7 +124,7 @@ class CameraManager:
         # (movflags frag_keyframe), so a 4 s GOP yields clean 4 s fMP4
         # fragments without any re-encoding.
         self._encoder = H264Encoder(
-            bitrate=self._bitrate, iperiod=self._fps * 4
+            bitrate=self._bitrate, iperiod=self._fps * 4, profile="high"
         )
 
         self._last_frame_time = time.monotonic()
@@ -259,8 +259,8 @@ class CameraManager:
     def _write_snapshot(self, arr: np.ndarray) -> None:
         try:
             bgr = cv2.cvtColor(arr, cv2.COLOR_YUV2BGR_I420)
-            thumb = cv2.resize(bgr, (640, 360), interpolation=cv2.INTER_LINEAR)
-            ok, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            thumb = cv2.resize(bgr, (1280, 720), interpolation=cv2.INTER_AREA)
+            ok, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 92])
             if ok:
                 tmp = SNAPSHOT_PATH + ".tmp"
                 with open(tmp, "wb") as f:
