@@ -20,7 +20,7 @@ import {
   SRTPCryptoSuites,
   uuid,
   VideoCodecType,
-} from "hap-nodejs";
+} from "@homebridge/hap-nodejs";
 
 import { homekitDir, loadConfig, loadPairing } from "./config";
 import { SnapshotProvider } from "./snapshot";

@@ -15,7 +15,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "hap-nodejs": "^0.14.0",
+    "@homebridge/hap-nodejs": "^2.1.7",
     "js-yaml": "^4.1.0",
     "qrcode-terminal": "^0.12.0"
   },

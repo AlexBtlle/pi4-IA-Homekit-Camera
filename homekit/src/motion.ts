@@ -1,5 +1,5 @@
 import http from "http";
-import { CameraController, Characteristic } from "hap-nodejs";
+import { CameraController, Characteristic } from "@homebridge/hap-nodejs";
 
 /**
  * Tiny HTTP endpoint the Python detector posts to when it sees motion:
