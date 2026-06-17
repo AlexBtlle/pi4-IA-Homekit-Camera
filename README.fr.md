@@ -105,7 +105,7 @@ Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Après modificat
 |---|---|---|
 | `camera.width` × `height` | 1920×1080 | Résolution capture / direct / enregistrement |
 | `camera.fps` | 30 | Cadence d'images |
-| `camera.bitrate` | 4000000 | Débit H264 (bit/s) |
+| `camera.bitrate` | 8000000 | Débit H264 (bit/s) — ~8 Mbps pour un 1080p30 net ; descendre à ~4 Mbps pour économiser la bande passante |
 | `camera.rotation` | 0 | 0 / 90 / 180 / 270 |
 | `camera.full_fov` | true | Utilise toute la surface du capteur pour exploiter l'angle complet de l'objectif. La plupart des capteurs (IMX219, OV5647…) recadrent au centre en mode 1080p natif, ce qui rétrécit le champ ; cette option force un mode pleine vue (binned) puis redimensionne à la résolution de sortie. Mettre `false` pour le recadrage natif, plus net mais plus serré. |
 | `homekit.camera_name` | Pi Camera | Nom affiché dans l'app Maison |

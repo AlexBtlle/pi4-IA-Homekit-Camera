@@ -104,7 +104,7 @@ Everything lives in one file: [`config.yaml`](config.yaml). After editing, re-ru
 |---|---|---|
 | `camera.width` × `height` | 1920×1080 | Capture / stream / recording resolution |
 | `camera.fps` | 30 | Frame rate |
-| `camera.bitrate` | 4000000 | H264 bitrate (bit/s) |
+| `camera.bitrate` | 8000000 | H264 bitrate (bit/s) — ~8 Mbps for crisp 1080p30; lower to ~4 Mbps to save bandwidth |
 | `camera.rotation` | 0 | 0 / 90 / 180 / 270 |
 | `camera.full_fov` | true | Use the full sensor area so the lens shows its full angle. Most sensors (IMX219, OV5647…) center-crop in native 1080p mode, narrowing the view; this forces a full-FOV (binned) mode and scales to the output size. Set `false` for the sharper but narrower native crop. |
 | `homekit.camera_name` | Pi Camera | Name shown in the Home app |

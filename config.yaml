@@ -2,7 +2,7 @@ camera:
   width: 1920
   height: 1080
   fps: 30
-  bitrate: 4000000
+  bitrate: 8000000
   rotation: 0        # 0 | 90 | 180 | 270
   lores_width: 320
   lores_height: 240
