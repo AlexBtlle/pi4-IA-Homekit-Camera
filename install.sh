@@ -172,9 +172,9 @@ info "Python dependencies installed."
 info "Building the HomeKit app (npm ci + tsc)..."
 pushd "${INSTALL_DIR}/homekit" >/dev/null
 if [[ -f package-lock.json ]]; then
-    npm ci --no-audit --no-fund
+    npm ci --no-audit --no-fund 2>&1 | grep -v "npm warn deprecated"
 else
-    npm install --no-audit --no-fund
+    npm install --no-audit --no-fund 2>&1 | grep -v "npm warn deprecated"
 fi
 npm run build
 popd >/dev/null
