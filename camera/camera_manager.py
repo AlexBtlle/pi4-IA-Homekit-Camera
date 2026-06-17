@@ -44,6 +44,9 @@ class CameraManager:
         self._lores_h = int(self._cfg.get("lores_height", 240))
         self._snapshot_interval = float(self._cfg.get("snapshot_interval", 2))
         self._full_fov = bool(self._cfg.get("full_fov", True))
+        self._sharpness = float(self._cfg.get("sharpness", 1.0))
+        self._contrast = float(self._cfg.get("contrast", 1.0))
+        self._saturation = float(self._cfg.get("saturation", 1.0))
 
         self._picam2 = None
         self._encoder = None
@@ -78,7 +81,12 @@ class CameraManager:
         cfg_kwargs = dict(
             main={"size": (self._width, self._height), "format": "YUV420"},
             lores={"size": (self._lores_w, self._lores_h), "format": "YUV420"},
-            controls={"FrameRate": self._fps},
+            controls={
+                "FrameRate": self._fps,
+                "Sharpness": self._sharpness,
+                "Contrast": self._contrast,
+                "Saturation": self._saturation,
+            },
         )
 
         # Many Pi sensors (IMX219, OV5647…) use a center-cropped readout for

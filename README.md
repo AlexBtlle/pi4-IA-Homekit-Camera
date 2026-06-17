@@ -107,6 +107,9 @@ Everything lives in one file: [`config.yaml`](config.yaml). After editing, re-ru
 | `camera.bitrate` | 8000000 | H264 bitrate (bit/s) — ~8 Mbps for crisp 1080p30; lower to ~4 Mbps to save bandwidth |
 | `camera.rotation` | 0 | 0 / 90 / 180 / 270 |
 | `camera.full_fov` | true | Use the full sensor area so the lens shows its full angle. Most sensors (IMX219, OV5647…) center-crop in native 1080p mode, narrowing the view; this forces a full-FOV (binned) mode and scales to the output size. Set `false` for the sharper but narrower native crop. |
+| `camera.sharpness` | 1.0 | ISP edge sharpening (0.0–16.0). Try 1.5–2.0 to compensate for lens softness. |
+| `camera.contrast` | 1.0 | ISP contrast (0.0–32.0). |
+| `camera.saturation` | 1.0 | ISP colour saturation (0.0–32.0). Try 1.2–1.5 for richer colours. |
 | `homekit.camera_name` | Pi Camera | Name shown in the Home app |
 | `homekit.motion_timeout` | 10 | Seconds the motion sensor stays active |
 | `detection.min_motion_area` | 1500 | Motion sensitivity (smaller = more sensitive). Default is tuned for humans (~3 000 px at 320×240). Reduce to ~600 to also detect cats/dogs. |

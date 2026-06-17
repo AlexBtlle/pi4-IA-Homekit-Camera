@@ -8,6 +8,9 @@ camera:
   lores_height: 240
   snapshot_interval: 2      # seconds between JPEG snapshots written to /tmp
   full_fov: true            # use the full sensor (full lens angle); false = native cropped 1080p
+  sharpness: 1.0            # ISP sharpness 0.0–16.0 (1.0 = default; try 1.5–2.0 for crisper edges)
+  contrast: 1.0             # ISP contrast  0.0–32.0 (1.0 = default)
+  saturation: 1.0           # ISP saturation 0.0–32.0 (1.0 = default; try 1.2–1.5 for richer colours)
 
 rtsp:
   port: 8554         # mediamtx RTSP port
