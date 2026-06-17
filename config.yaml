@@ -7,6 +7,7 @@ camera:
   lores_width: 320
   lores_height: 240
   snapshot_interval: 2      # seconds between JPEG snapshots written to /tmp
+  full_fov: true            # use the full sensor (full lens angle); false = native cropped 1080p
 
 rtsp:
   port: 8554         # mediamtx RTSP port

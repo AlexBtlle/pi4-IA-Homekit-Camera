@@ -43,6 +43,7 @@ class CameraManager:
         self._lores_w = int(self._cfg.get("lores_width", 320))
         self._lores_h = int(self._cfg.get("lores_height", 240))
         self._snapshot_interval = float(self._cfg.get("snapshot_interval", 2))
+        self._full_fov = bool(self._cfg.get("full_fov", True))
 
         self._picam2 = None
         self._encoder = None
@@ -74,11 +75,26 @@ class CameraManager:
 
         self._picam2 = Picamera2()
 
-        video_cfg = self._picam2.create_video_configuration(
+        cfg_kwargs = dict(
             main={"size": (self._width, self._height), "format": "YUV420"},
             lores={"size": (self._lores_w, self._lores_h), "format": "YUV420"},
             controls={"FrameRate": self._fps},
         )
+
+        # Many Pi sensors (IMX219, OV5647…) use a center-cropped readout for
+        # their native 1080p mode, which narrows the lens's field of view.
+        # Forcing a full-FOV (usually binned) sensor mode and letting the ISP
+        # scale to the output size restores the full angle of the lens.
+        if self._full_fov:
+            mode = self._select_full_fov_mode()
+            if mode is not None:
+                cfg_kwargs["raw"] = {"size": mode["size"]}
+                logger.info(
+                    "Full-FOV sensor mode: %s @ %.0f fps (output scaled to %dx%d)",
+                    mode["size"], mode.get("fps", 0), self._width, self._height,
+                )
+
+        video_cfg = self._picam2.create_video_configuration(**cfg_kwargs)
 
         if self._rotation:
             from libcamera import Transform
@@ -153,6 +169,31 @@ class CameraManager:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _select_full_fov_mode(self):
+        """
+        Pick the sensor mode that reads the *full* sensor area (full field of
+        view), preferring the highest-resolution one that still sustains the
+        configured frame rate.
+
+        Sensor modes expose ``crop_limits`` (the sensor rectangle they read);
+        the full-FOV modes are the ones with the widest crop. Among those we
+        keep the modes fast enough for ``self._fps`` and take the sharpest.
+        Returns None if sensor modes can't be read (falls back to the default
+        cropped readout).
+        """
+        try:
+            modes = self._picam2.sensor_modes
+        except Exception:
+            logger.warning("Could not read sensor modes; using default crop", exc_info=True)
+            return None
+        if not modes:
+            return None
+
+        max_crop_w = max(m["crop_limits"][2] for m in modes)
+        full = [m for m in modes if m["crop_limits"][2] == max_crop_w]
+        usable = [m for m in full if m.get("fps", 0) >= self._fps]
+        return max(usable or full, key=lambda m: m["size"][0])
 
     def _watchdog_run(self) -> None:
         """Exit the process if no frame arrives within 10 s (libcamera timeout)."""
