@@ -111,6 +111,8 @@ Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Après modificat
 | `camera.sharpness` | 1.0 | Accentuation ISP (0.0–16.0). Essayer 1.5–2.0 pour compenser la mollesse de l'objectif. |
 | `camera.contrast` | 1.0 | Contraste ISP (0.0–32.0). |
 | `camera.saturation` | 1.0 | Saturation couleur ISP (0.0–32.0). Essayer 1.2–1.5 pour des couleurs plus riches. |
+| `camera.ir_grayscale` | true | Bascule automatiquement le flux **et** la miniature en niveaux de gris la nuit, supprimant la dominante rose/magenta infrarouge. Coût CPU nul (via la saturation ISP). |
+| `camera.ir_exit_margin` | 0.25 | Dérive des gains balance des blancs (fraction) qui met fin au mode nuit et restaure la couleur. Plus bas = sort plus tôt. |
 | `homekit.camera_name` | Pi Camera | Nom affiché dans l'app Maison |
 | `homekit.motion_timeout` | 10 | Durée (s) d'activation du capteur de mouvement |
 | `detection.min_motion_area` | 1500 | Sensibilité du mouvement (plus petit = plus sensible). Valeur par défaut calibrée pour les humains (~3 000 px à 320×240). Réduire à ~600 pour détecter aussi les chats/chiens. |

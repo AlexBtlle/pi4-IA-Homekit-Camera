@@ -48,3 +48,30 @@ def test_exact_threshold_boundary():
 
 def test_just_above_threshold():
     assert CameraManager._is_infrared(fake_bgr(100, 113, 126))
+
+
+# --- _gains_deviate: exit-night-mode signal -------------------------------
+
+def test_gains_stable_no_deviation():
+    # Same gains → still night, no exit
+    assert not CameraManager._gains_deviate((0.6, 3.2), (0.6, 3.2), 0.25)
+
+
+def test_gains_small_drift_within_margin():
+    # +10% on blue gain, margin 25% → no exit
+    assert not CameraManager._gains_deviate((0.6, 3.52), (0.6, 3.2), 0.25)
+
+
+def test_gains_large_drift_triggers_exit():
+    # Daylight: red gain jumps from 0.6 to 1.8 (+200%) → exit
+    assert CameraManager._gains_deviate((1.8, 1.6), (0.6, 3.2), 0.25)
+
+
+def test_gains_blue_drift_triggers_exit():
+    # Blue gain alone drifts past margin → exit
+    assert CameraManager._gains_deviate((0.6, 2.0), (0.6, 3.2), 0.25)
+
+
+def test_gains_zero_baseline_ignored():
+    # A zero baseline component must not divide-by-zero; it's skipped
+    assert not CameraManager._gains_deviate((0.0, 3.2), (0.0, 3.2), 0.25)

@@ -110,6 +110,8 @@ Everything lives in one file: [`config.yaml`](config.yaml). After editing, re-ru
 | `camera.sharpness` | 1.0 | ISP edge sharpening (0.0–16.0). Try 1.5–2.0 to compensate for lens softness. |
 | `camera.contrast` | 1.0 | ISP contrast (0.0–32.0). |
 | `camera.saturation` | 1.0 | ISP colour saturation (0.0–32.0). Try 1.2–1.5 for richer colours. |
+| `camera.ir_grayscale` | true | Auto-switch the stream **and** snapshot to grayscale at night, removing the pink/magenta IR cast. Zero CPU cost (done via ISP saturation). |
+| `camera.ir_exit_margin` | 0.25 | AWB-gain drift (fraction) that ends night mode and restores colour. Lower = exits sooner. |
 | `homekit.camera_name` | Pi Camera | Name shown in the Home app |
 | `homekit.motion_timeout` | 10 | Seconds the motion sensor stays active |
 | `detection.min_motion_area` | 1500 | Motion sensitivity (smaller = more sensitive). Default is tuned for humans (~3 000 px at 320×240). Reduce to ~600 to also detect cats/dogs. |

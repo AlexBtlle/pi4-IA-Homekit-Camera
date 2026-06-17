@@ -49,6 +49,15 @@ class CameraManager:
         self._contrast = float(self._cfg.get("contrast", 1.0))
         self._saturation = float(self._cfg.get("saturation", 1.0))
 
+        # Night vision: when the IR-cut filter is removed the whole image gets a
+        # pink/magenta cast. We detect it and drop the ISP Saturation to 0 so the
+        # entire pipeline (stream + snapshot) goes grayscale at zero CPU cost.
+        self._ir_grayscale = bool(self._cfg.get("ir_grayscale", True))
+        self._ir_exit_margin = float(self._cfg.get("ir_exit_margin", 0.25))
+        self._ir_mode = False
+        self._ir_gain_baseline: tuple | None = None
+        self._latest_colour_gains: tuple | None = None
+
         self._picam2 = None
         self._encoder = None
 
@@ -252,6 +261,10 @@ class CameraManager:
         if (self._snapshot_interval > 0
                 and time.monotonic() - self._last_snapshot >= self._snapshot_interval):
             self._last_snapshot = time.monotonic()
+            try:
+                self._latest_colour_gains = request.get_metadata().get("ColourGains")
+            except Exception:
+                self._latest_colour_gains = None
             main_arr = request.make_array("main").copy()
             try:
                 self._snapshot_queue.put_nowait(main_arr)
@@ -263,6 +276,55 @@ class CameraManager:
         """Return True when the frame has a strong pink/IR cast (R channel >> B channel)."""
         mean = bgr.mean(axis=(0, 1))  # [B, G, R]
         return float(mean[2]) - float(mean[0]) > 25 and float(mean[2]) > 60
+
+    @staticmethod
+    def _gains_deviate(gains, baseline, margin: float) -> bool:
+        """True when either AWB gain has drifted more than `margin` from baseline."""
+        for cur, base in zip(gains, baseline):
+            if base and abs(cur - base) / base > margin:
+                return True
+        return False
+
+    def _set_saturation(self, value: float) -> None:
+        if self._picam2 is not None:
+            try:
+                self._picam2.set_controls({"Saturation": value})
+            except Exception:
+                logger.debug("set_controls(Saturation) failed", exc_info=True)
+
+    def _update_night_mode(self, thumb: np.ndarray) -> bool:
+        """
+        Decide whether the current scene is infrared (night vision) and keep the
+        ISP Saturation in sync. Returns True when the frame should be grayscale.
+
+        Stream desaturation needs an AWB-gain signal to exit night mode (the pink
+        detector goes blind once Saturation is 0). When ColourGains aren't exposed
+        by the sensor, we fall back to a stateless per-snapshot colour test that
+        only greys the thumbnail, leaving the stream untouched.
+        """
+        gains = self._latest_colour_gains
+        if not self._ir_grayscale or not gains:
+            return self._is_infrared(thumb)
+
+        if not self._ir_mode:
+            if self._is_infrared(thumb):
+                self._ir_mode = True
+                self._ir_gain_baseline = gains
+                self._set_saturation(0.0)
+                logger.info(
+                    "Night vision detected (ColourGains=%s) → grayscale stream",
+                    tuple(round(g, 2) for g in gains),
+                )
+        elif self._ir_gain_baseline and self._gains_deviate(
+                gains, self._ir_gain_baseline, self._ir_exit_margin):
+            self._ir_mode = False
+            self._ir_gain_baseline = None
+            self._set_saturation(self._saturation)
+            logger.info(
+                "Daylight restored (ColourGains=%s) → colour stream",
+                tuple(round(g, 2) for g in gains),
+            )
+        return self._ir_mode
 
     def _snapshot_worker(self) -> None:
         """Persistent worker: encodes and writes JPEG snapshots from the queue."""
@@ -276,7 +338,7 @@ class CameraManager:
             try:
                 bgr = cv2.cvtColor(arr, cv2.COLOR_YUV2BGR_I420)
                 thumb = cv2.resize(bgr, (1280, 720), interpolation=cv2.INTER_AREA)
-                if self._is_infrared(thumb):
+                if self._update_night_mode(thumb):
                     gray = cv2.cvtColor(thumb, cv2.COLOR_BGR2GRAY)
                     thumb = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
                 ok, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 92])

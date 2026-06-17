@@ -11,6 +11,8 @@ camera:
   sharpness: 1.0            # ISP sharpness 0.0–16.0 (1.0 = default; try 1.5–2.0 for crisper edges)
   contrast: 1.0             # ISP contrast  0.0–32.0 (1.0 = default)
   saturation: 1.0           # ISP saturation 0.0–32.0 (1.0 = default; try 1.2–1.5 for richer colours)
+  ir_grayscale: true        # auto-switch stream + snapshot to grayscale at night (kills the IR pink cast)
+  ir_exit_margin: 0.25      # AWB-gain drift (fraction) that ends night mode and restores colour
 
 rtsp:
   port: 8554         # mediamtx RTSP port
