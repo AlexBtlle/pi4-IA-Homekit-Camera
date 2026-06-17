@@ -258,6 +258,12 @@ class CameraManager:
             except queue.Full:
                 pass  # previous snapshot still pending — skip this frame
 
+    @staticmethod
+    def _is_infrared(bgr: np.ndarray) -> bool:
+        """Return True when the frame has a strong pink/IR cast (R channel >> B channel)."""
+        mean = bgr.mean(axis=(0, 1))  # [B, G, R]
+        return float(mean[2]) - float(mean[0]) > 25 and float(mean[2]) > 60
+
     def _snapshot_worker(self) -> None:
         """Persistent worker: encodes and writes JPEG snapshots from the queue."""
         while True:
@@ -270,6 +276,9 @@ class CameraManager:
             try:
                 bgr = cv2.cvtColor(arr, cv2.COLOR_YUV2BGR_I420)
                 thumb = cv2.resize(bgr, (1280, 720), interpolation=cv2.INTER_AREA)
+                if self._is_infrared(thumb):
+                    gray = cv2.cvtColor(thumb, cv2.COLOR_BGR2GRAY)
+                    thumb = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
                 ok, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 92])
                 if ok:
                     tmp = SNAPSHOT_PATH + ".tmp"
