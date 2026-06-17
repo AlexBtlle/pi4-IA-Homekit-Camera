@@ -1,4 +1,5 @@
 import os
+import queue
 import time
 import threading
 import logging
@@ -43,6 +44,19 @@ class CameraManager:
         self._lores_w = int(self._cfg.get("lores_width", 320))
         self._lores_h = int(self._cfg.get("lores_height", 240))
         self._snapshot_interval = float(self._cfg.get("snapshot_interval", 2))
+        self._full_fov = bool(self._cfg.get("full_fov", True))
+        self._sharpness = float(self._cfg.get("sharpness", 1.0))
+        self._contrast = float(self._cfg.get("contrast", 1.0))
+        self._saturation = float(self._cfg.get("saturation", 1.0))
+
+        # Night vision: when the IR-cut filter is removed the whole image gets a
+        # pink/magenta cast. We detect it and drop the ISP Saturation to 0 so the
+        # entire pipeline (stream + snapshot) goes grayscale at zero CPU cost.
+        self._ir_grayscale = bool(self._cfg.get("ir_grayscale", True))
+        self._ir_exit_margin = float(self._cfg.get("ir_exit_margin", 0.25))
+        self._ir_mode = False
+        self._ir_gain_baseline: tuple | None = None
+        self._latest_colour_gains: tuple | None = None
 
         self._picam2 = None
         self._encoder = None
@@ -54,7 +68,10 @@ class CameraManager:
         self._latest_lores_frame: np.ndarray | None = None
 
         self._last_snapshot: float = 0.0
-        self._snapshot_writing: bool = False
+        self._snapshot_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=1)
+        self._snapshot_thread = threading.Thread(
+            target=self._snapshot_worker, daemon=True, name="snapshot-writer"
+        )
 
         self._last_frame_time: float = 0.0
         self._watchdog_stop = threading.Event()
@@ -74,11 +91,33 @@ class CameraManager:
 
         self._picam2 = Picamera2()
 
-        video_cfg = self._picam2.create_video_configuration(
+        cfg_kwargs = dict(
             main={"size": (self._width, self._height), "format": "YUV420"},
             lores={"size": (self._lores_w, self._lores_h), "format": "YUV420"},
-            controls={"FrameRate": self._fps},
+            controls={
+                "FrameRate": self._fps,
+                "Sharpness": self._sharpness,
+                "Contrast": self._contrast,
+                "Saturation": self._saturation,
+            },
         )
+
+        # Many Pi sensors (IMX219, OV5647…) use a center-cropped readout for
+        # their native 1080p mode, which narrows the lens's field of view.
+        # Forcing a full-FOV (usually binned) sensor mode and letting the ISP
+        # scale to the output size restores the full angle of the lens.
+        if self._full_fov:
+            mode = self._select_full_fov_mode()
+            if mode is not None:
+                cfg_kwargs["raw"] = {"size": mode["size"]}
+                src_w = mode["size"][0]
+                direction = "↓ downscale" if src_w >= self._width else "↑ upscale"
+                logger.info(
+                    "Full-FOV sensor mode: %s @ %.0f fps %s → %dx%d",
+                    mode["size"], mode.get("fps", 0), direction, self._width, self._height,
+                )
+
+        video_cfg = self._picam2.create_video_configuration(**cfg_kwargs)
 
         if self._rotation:
             from libcamera import Transform
@@ -98,7 +137,7 @@ class CameraManager:
         # (movflags frag_keyframe), so a 4 s GOP yields clean 4 s fMP4
         # fragments without any re-encoding.
         self._encoder = H264Encoder(
-            bitrate=self._bitrate, iperiod=self._fps * 4
+            bitrate=self._bitrate, iperiod=self._fps * 4, profile="high"
         )
 
         self._last_frame_time = time.monotonic()
@@ -107,6 +146,7 @@ class CameraManager:
             self._encoder,
             FileOutput(os.fdopen(self._pipe_w, "wb")),
         )
+        self._snapshot_thread.start()
         self._watchdog_thread.start()
 
         logger.info(
@@ -154,6 +194,50 @@ class CameraManager:
     # Internal
     # ------------------------------------------------------------------
 
+    def _select_full_fov_mode(self):
+        """
+        Pick the best full-FOV sensor mode using a three-tier priority:
+
+        1. Source resolution >= output resolution (true ISP downscale = supersampling)
+           AND fps >= configured fps.
+        2. Same downscale condition but fps >= MIN_FPS (25) — accepts a slight fps
+           drop when the sensor offers a sharper high-res mode (e.g. IMX219 3280×1848
+           @ 28 fps, IMX708 2304×1296 @ 56 fps).
+        3. Fastest full-FOV binned mode at configured fps (fallback for sensors with
+           no downscale path, e.g. OV5647 → 1296×972 @ 47 fps).
+
+        "Full-FOV" means the widest crop_limits[2] across all sensor modes.
+        Returns None on error (falls back to the default cropped readout).
+        """
+        MIN_FPS = 25
+
+        try:
+            modes = self._picam2.sensor_modes
+        except Exception:
+            logger.warning("Could not read sensor modes; using default crop", exc_info=True)
+            return None
+        if not modes:
+            return None
+
+        max_crop_w = max(m["crop_limits"][2] for m in modes)
+        full = [m for m in modes if m["crop_limits"][2] == max_crop_w]
+
+        # Tier 1: true downscale at target fps
+        tier1 = [m for m in full
+                 if m["size"][0] >= self._width and m.get("fps", 0) >= self._fps]
+        if tier1:
+            return max(tier1, key=lambda m: m["size"][0])
+
+        # Tier 2: true downscale, slightly below target fps but above floor
+        tier2 = [m for m in full
+                 if m["size"][0] >= self._width and m.get("fps", 0) >= MIN_FPS]
+        if tier2:
+            return max(tier2, key=lambda m: m["size"][0])
+
+        # Tier 3: best binned mode at target fps (upscale fallback)
+        usable = [m for m in full if m.get("fps", 0) >= self._fps]
+        return max(usable or full, key=lambda m: m["size"][0])
+
     def _watchdog_run(self) -> None:
         """Exit the process if no frame arrives within 10 s (libcamera timeout)."""
         timeout = 10.0
@@ -175,28 +259,93 @@ class CameraManager:
             self._lores_condition.notify_all()
 
         if (self._snapshot_interval > 0
-                and not self._snapshot_writing
                 and time.monotonic() - self._last_snapshot >= self._snapshot_interval):
             self._last_snapshot = time.monotonic()
-            self._snapshot_writing = True
+            try:
+                self._latest_colour_gains = request.get_metadata().get("ColourGains")
+            except Exception:
+                self._latest_colour_gains = None
             main_arr = request.make_array("main").copy()
-            threading.Thread(
-                target=self._write_snapshot,
-                args=(main_arr,),
-                daemon=True,
-            ).start()
+            try:
+                self._snapshot_queue.put_nowait(main_arr)
+            except queue.Full:
+                pass  # previous snapshot still pending — skip this frame
 
-    def _write_snapshot(self, arr: np.ndarray) -> None:
-        try:
-            bgr = cv2.cvtColor(arr, cv2.COLOR_YUV2BGR_I420)
-            thumb = cv2.resize(bgr, (640, 360), interpolation=cv2.INTER_LINEAR)
-            ok, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            if ok:
-                tmp = SNAPSHOT_PATH + ".tmp"
-                with open(tmp, "wb") as f:
-                    f.write(buf.tobytes())
-                os.replace(tmp, SNAPSHOT_PATH)
-        except Exception:
-            logger.debug("Snapshot write failed", exc_info=True)
-        finally:
-            self._snapshot_writing = False
+    @staticmethod
+    def _is_infrared(bgr: np.ndarray) -> bool:
+        """Return True when the frame has a strong pink/IR cast (R channel >> B channel)."""
+        mean = bgr.mean(axis=(0, 1))  # [B, G, R]
+        return float(mean[2]) - float(mean[0]) > 25 and float(mean[2]) > 60
+
+    @staticmethod
+    def _gains_deviate(gains, baseline, margin: float) -> bool:
+        """True when either AWB gain has drifted more than `margin` from baseline."""
+        for cur, base in zip(gains, baseline):
+            if base and abs(cur - base) / base > margin:
+                return True
+        return False
+
+    def _set_saturation(self, value: float) -> None:
+        if self._picam2 is not None:
+            try:
+                self._picam2.set_controls({"Saturation": value})
+            except Exception:
+                logger.debug("set_controls(Saturation) failed", exc_info=True)
+
+    def _update_night_mode(self, thumb: np.ndarray) -> bool:
+        """
+        Decide whether the current scene is infrared (night vision) and keep the
+        ISP Saturation in sync. Returns True when the frame should be grayscale.
+
+        Stream desaturation needs an AWB-gain signal to exit night mode (the pink
+        detector goes blind once Saturation is 0). When ColourGains aren't exposed
+        by the sensor, we fall back to a stateless per-snapshot colour test that
+        only greys the thumbnail, leaving the stream untouched.
+        """
+        gains = self._latest_colour_gains
+        if not self._ir_grayscale or not gains:
+            return self._is_infrared(thumb)
+
+        if not self._ir_mode:
+            if self._is_infrared(thumb):
+                self._ir_mode = True
+                self._ir_gain_baseline = gains
+                self._set_saturation(0.0)
+                logger.info(
+                    "Night vision detected (ColourGains=%s) → grayscale stream",
+                    tuple(round(g, 2) for g in gains),
+                )
+        elif self._ir_gain_baseline and self._gains_deviate(
+                gains, self._ir_gain_baseline, self._ir_exit_margin):
+            self._ir_mode = False
+            self._ir_gain_baseline = None
+            self._set_saturation(self._saturation)
+            logger.info(
+                "Daylight restored (ColourGains=%s) → colour stream",
+                tuple(round(g, 2) for g in gains),
+            )
+        return self._ir_mode
+
+    def _snapshot_worker(self) -> None:
+        """Persistent worker: encodes and writes JPEG snapshots from the queue."""
+        while True:
+            try:
+                arr = self._snapshot_queue.get(timeout=2.0)
+            except queue.Empty:
+                if self._watchdog_stop.is_set():
+                    break
+                continue
+            try:
+                bgr = cv2.cvtColor(arr, cv2.COLOR_YUV2BGR_I420)
+                thumb = cv2.resize(bgr, (1280, 720), interpolation=cv2.INTER_AREA)
+                if self._update_night_mode(thumb):
+                    gray = cv2.cvtColor(thumb, cv2.COLOR_BGR2GRAY)
+                    thumb = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                ok, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                if ok:
+                    tmp = SNAPSHOT_PATH + ".tmp"
+                    with open(tmp, "wb") as f:
+                        f.write(buf.tobytes())
+                    os.replace(tmp, SNAPSHOT_PATH)
+            except Exception:
+                logger.debug("Snapshot write failed", exc_info=True)

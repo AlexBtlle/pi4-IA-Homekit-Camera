@@ -3,7 +3,7 @@ import {
   CameraRecordingDelegate,
   HDSProtocolSpecificErrorReason,
   RecordingPacket,
-} from "hap-nodejs";
+} from "@homebridge/hap-nodejs";
 
 import { Prebuffer } from "./prebuffer";
 

@@ -11,7 +11,7 @@ import {
   StreamingRequest,
   StreamRequestCallback,
   StreamRequestTypes,
-} from "hap-nodejs";
+} from "@homebridge/hap-nodejs";
 
 import { SnapshotProvider } from "./snapshot";
 

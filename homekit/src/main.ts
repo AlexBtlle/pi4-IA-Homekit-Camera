@@ -20,7 +20,7 @@ import {
   SRTPCryptoSuites,
   uuid,
   VideoCodecType,
-} from "hap-nodejs";
+} from "@homebridge/hap-nodejs";
 
 import { homekitDir, loadConfig, loadPairing } from "./config";
 import { SnapshotProvider } from "./snapshot";
@@ -153,6 +153,7 @@ function main(): void {
     pairing.pincode,
     config.cameraName,
     config.qrWebPort,
+    motion,
   ).start();
 
   motion.start();

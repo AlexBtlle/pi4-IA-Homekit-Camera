@@ -5,7 +5,7 @@ logLevel: info
 logDestinations: [stdout]
 
 rtspTransports: [tcp]
-rtspAddress: :8554
+rtspAddress: 127.0.0.1:8554
 
 # All other protocols disabled — only RTSP is needed (keeps the footprint and
 # the listening surface minimal).

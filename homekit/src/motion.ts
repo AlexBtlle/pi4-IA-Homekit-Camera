@@ -1,5 +1,5 @@
 import http from "http";
-import { CameraController, Characteristic } from "hap-nodejs";
+import { CameraController, Characteristic } from "@homebridge/hap-nodejs";
 
 /**
  * Tiny HTTP endpoint the Python detector posts to when it sees motion:
@@ -12,6 +12,12 @@ import { CameraController, Characteristic } from "hap-nodejs";
 export class MotionService {
   private server?: http.Server;
   private resetTimer?: NodeJS.Timeout;
+  private _lastTrigger?: Date;
+  private _triggerCount = 0;
+
+  getStats(): { lastTrigger?: Date; triggerCount: number } {
+    return { lastTrigger: this._lastTrigger, triggerCount: this._triggerCount };
+  }
 
   constructor(
     private readonly controller: CameraController,
@@ -52,6 +58,8 @@ export class MotionService {
     }
 
     sensor.updateCharacteristic(Characteristic.MotionDetected, true);
+    this._lastTrigger = new Date();
+    this._triggerCount++;
     console.log("[motion] motion detected → sensor active");
 
     if (this.resetTimer) {
