@@ -8,7 +8,7 @@ Turn a Raspberry Pi 4 and a camera module into a **native HomeKit Secure Video c
 Install  →  scan the QR code  →  done.
 ```
 
-No Homebridge, no plugins, no cloud account, no web dashboard. The camera pairs directly with the Home app, streams live video, detects motion, and records HKSV clips to iCloud that start *before* the motion happened.
+No Homebridge, no plugins, no cloud account, no admin dashboard to babysit. The camera pairs directly with the Home app, streams live video, detects motion, and records HKSV clips to iCloud that start *before* the motion happened.
 
 ## Features
 
@@ -16,8 +16,9 @@ No Homebridge, no plugins, no cloud account, no web dashboard. The camera pairs 
 - **HomeKit Secure Video** — motion-triggered recordings stored in iCloud, viewable directly in the Home app's timeline. A rolling 4-second prebuffer means every clip starts before the motion event.
 - **Smart classification** — People / Animals / Vehicles / Packages detection is done by your Apple home hub (Apple TV / HomePod), exactly like commercial HKSV cameras. The Pi just reports motion, cheaply and reliably.
 - **Rich notifications** — motion alerts with a snapshot on your iPhone.
+- **Status dashboard** — a built-in web page (`http://<pi>.local:8080`) shows the pairing QR code and a live health view: service status, CPU temperature and motion stats.
 - **Lightweight** — ~330 MB RAM total, low CPU load, three small systemd services.
-- **Private** — everything runs on your Pi. The only cloud involved is your own iCloud (for HKSV recordings, end-to-end encrypted by Apple).
+- **Private** — everything runs on your Pi. The RTSP stream is bound to localhost (never exposed on the network); the only cloud involved is your own iCloud (for HKSV recordings, end-to-end encrypted by Apple).
 
 ## Requirements
 
@@ -52,7 +53,8 @@ journalctl -u pi4cam-homekit -b --no-pager | head -40
 ### Pair with the Home app
 
 1. Open `http://<pi-hostname>.local:8080` in Safari on your iPhone or Mac
-   — the page shows the QR code and PIN for your camera
+   — the page shows the QR code and PIN for your camera, plus a live status
+   dashboard (service health, CPU temperature, motion stats)
 2. Open **Home** → **+** → **Add Accessory** → scan the QR code
    (or tap *More options…* and enter the PIN)
 3. The "not certified" warning is normal for any DIY accessory — tap *Add Anyway*
@@ -72,20 +74,23 @@ That's it. Walk in front of the camera: a clip appears in the Home app timeline,
 │ picamera2                                                   │
 │  ├─ main 1920×1080, hardware H264 (keyframe every 4 s)      │
 │  │    └→ ffmpeg -c copy → RTSP → mediamtx                   │
+│  ├─ main YUV420 → JPEG snapshot → /tmp every 2 s            │
 │  └─ lores 320×240 → OpenCV MOG2 motion detection            │
 │       └→ POST localhost:8989/motion                         │
+│  (frame watchdog: restarts on libcamera frontend timeout)   │
 └─────────────────────────────────────────────────────────────┘
 ┌─ mediamtx.service ─────────────────────────────────────────┐
-│ RTSP fan-out (:8554) — 1 producer, N consumers              │
+│ RTSP fan-out (127.0.0.1:8554) — 1 producer, N consumers     │
 └─────────────────────────────────────────────────────────────┘
 ┌─ pi4cam-homekit.service (Node, HAP-NodeJS) ────────────────┐
 │ Standalone HomeKit camera accessory:                        │
 │  • Live   : RTSP → SRTP passthrough (-c:v copy)             │
-│  • Snapshot: one JPEG frame via ffmpeg (cached 4 s)         │
+│  • Snapshot: serves the latest /tmp JPEG (instant)          │
 │  • Motion : MotionSensor + local HTTP endpoint :8989        │
-│  • HKSV   : continuous fragmented-MP4 prebuffer (12 s ring) │
+│  • HKSV   : continuous fragmented-MP4 prebuffer (6 s ring)  │
 │             → recording delegate streams init + 4 s         │
 │               fragments to the home hub on motion           │
+│  • Web    : QR + status dashboard on :8080                  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -118,8 +123,9 @@ journalctl -u mediamtx -f          # RTSP server
 
 - **Camera not found when pairing** — both the iPhone and the Pi must be on the same network; check that `avahi-daemon` is running (mDNS).
 - **"Recording Options" missing in the Home app** — the accessory's capabilities are cached at pairing time. Remove the camera from the Home app and pair it again.
-- **First snapshot is slow** — normal: with a keyframe every 4 s, the first JPEG can take a few seconds. It's cached afterwards.
-- **Check the raw stream** — `ffprobe rtsp://<pi-ip>:8554/camera` should show `h264, 1920x1080`.
+- **Snapshot looks frozen** — the Python pipeline refreshes `/tmp/pi4cam-snapshot.jpg` every 2 s. If it stops updating, check `journalctl -u pi4cam` (the frame watchdog restarts the service automatically on a libcamera timeout).
+- **Check service health** — open `http://<pi>.local:8080`: the status dashboard shows whether each service is up, the CPU temperature and the motion count.
+- **Check the raw stream** — the RTSP feed is bound to localhost for privacy, so probe it *from the Pi itself*: `ffprobe rtsp://127.0.0.1:8554/camera` should show `h264, 1920x1080`.
 
 ## Uninstall
 
