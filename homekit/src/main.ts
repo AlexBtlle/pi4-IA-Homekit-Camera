@@ -53,12 +53,29 @@ function main(): void {
   const streamingDelegate = new StreamingDelegate(config.rtspUrl, snapshots);
   const recordingDelegate = new RecordingDelegate(config.rtspUrl);
 
+  // Standard resolutions in descending order. Only those at or below the
+  // configured native resolution are advertised — with -c:v copy the stream
+  // is always at native res; HomeKit scales the live view on its side.
+  // A Pi 4 configured at 4K will automatically advertise 4K, 2K, 1080p…
+  const STANDARD_RESOLUTIONS: [number, number][] = [
+    [3840, 2160], // 4K UHD
+    [2560, 1440], // 2K QHD
+    [1920, 1080], // 1080p FHD
+    [1280,  720], // 720p HD
+    [ 640,  360], // 360p
+    [ 320,  240], // 240p (HAP minimum)
+  ];
+
+  const seen = new Set<string>([`${config.width}x${config.height}`]);
   const videoResolutions: [number, number, number][] = [
     [config.width, config.height, config.fps],
-    [1280, 720, config.fps],
-    [640, 360, config.fps],
-    [320, 240, config.fps],
   ];
+  for (const [w, h] of STANDARD_RESOLUTIONS) {
+    if (!seen.has(`${w}x${h}`) && w <= config.width && h <= config.height) {
+      seen.add(`${w}x${h}`);
+      videoResolutions.push([w, h, config.fps]);
+    }
+  }
 
   const options: CameraControllerOptions = {
     cameraStreamCount: 2, // allow a couple of simultaneous viewers
