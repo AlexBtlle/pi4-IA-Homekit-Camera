@@ -86,12 +86,12 @@ export class QrWebServer {
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 3.5rem 1.5rem 4rem;
-      gap: 3rem;
+      padding: 2rem 1.5rem 4rem;
+      gap: 2rem;
     }
     .header { text-align: center; }
-    .header h1 { font-size: 1rem; font-weight: 500; color: #1a1a1a; letter-spacing: -.01em; }
-    .header p  { margin-top: .3rem; font-size: .8rem; color: #aaa; }
+    .header h1 { font-size: .9rem; font-weight: 500; color: #1a1a1a; letter-spacing: -.01em; }
+    .header h1 span { color: #bbb; font-weight: 400; }
     .pairing {
       display: flex;
       flex-direction: column;
@@ -152,8 +152,7 @@ export class QrWebServer {
 </head>
 <body>
   <div class="header">
-    <h1>${esc(this.cameraName)}</h1>
-    <p>${esc(hostname)}.local</p>
+    <h1>${esc(this.cameraName)} <span>· ${esc(hostname)}.local</span></h1>
   </div>
 
   <div class="pairing">
