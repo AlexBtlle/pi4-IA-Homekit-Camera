@@ -69,7 +69,7 @@ class PresenceDetector:
             varThreshold=self._mog2_threshold,
             detectShadows=self._mog2_shadows,
         )
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 
         # Warmup: feed MOG2 at full frame rate so the background model stabilises
         # before we start triggering detections.
