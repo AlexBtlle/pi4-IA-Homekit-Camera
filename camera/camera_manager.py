@@ -79,6 +79,12 @@ class CameraManager:
             target=self._watchdog_run, daemon=True, name="frame-watchdog"
         )
 
+        # Throttle lores extraction to analysis_fps so make_array("lores") is not
+        # called 30×/s when the detector only needs 10×/s — biggest CPU saving.
+        _det_fps = float(config.get("detection", {}).get("analysis_fps", 10))
+        self._lores_interval = 1.0 / _det_fps if _det_fps > 0 else 0.0
+        self._last_lores_time: float = 0.0
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -251,7 +257,13 @@ class CameraManager:
 
     def _lores_callback(self, request) -> None:
         """Called by picamera2's capture thread on every frame. Must be fast."""
-        self._last_frame_time = time.monotonic()
+        now = time.monotonic()
+        self._last_frame_time = now  # always update for the watchdog
+
+        if self._lores_interval > 0 and now - self._last_lores_time < self._lores_interval:
+            return  # skip: detector doesn't need this frame yet
+        self._last_lores_time = now
+
         arr = request.make_array("lores")
         y_plane = arr[:self._lores_h, :self._lores_w].copy()
         with self._lores_condition:
