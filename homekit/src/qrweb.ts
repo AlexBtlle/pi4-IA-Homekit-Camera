@@ -78,87 +78,41 @@ export class QrWebServer {
   <title>${esc(this.cameraName)} — HomeKit</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    :root {
-      --bg:      #0a0a0f;
-      --surface: rgba(255,255,255,.05);
-      --border:  rgba(255,255,255,.08);
-      --text:    #f2f2f7;
-      --muted:   rgba(235,235,245,.5);
-      --green:   #30d158;
-      --yellow:  #ffd60a;
-      --red:     #ff453a;
-      --radius:  1.5rem;
-    }
     body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+      background: #fff;
+      color: #1a1a1a;
+      font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
       min-height: 100dvh;
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 2.5rem 1rem 3rem;
-      gap: 1.25rem;
+      padding: 3.5rem 1.5rem 4rem;
+      gap: 3rem;
     }
-    .name-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      width: 100%;
-      max-width: 420px;
-    }
-    .cam-name { font-size: 1.25rem; font-weight: 700; letter-spacing: -.01em; }
-    .cam-sub  { font-size: .8rem; color: var(--muted); margin-top: .15rem; }
-    .host-chip {
-      font-size: .72rem;
-      color: var(--muted);
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 2rem;
-      padding: .25rem .7rem;
-      white-space: nowrap;
-    }
-    .card {
-      width: 100%;
-      max-width: 420px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      overflow: hidden;
-    }
-    .card-section { padding: 1.5rem; }
-    .card-section + .card-section { border-top: 1px solid var(--border); }
+    .header { text-align: center; }
+    .header h1 { font-size: 1rem; font-weight: 500; color: #1a1a1a; letter-spacing: -.01em; }
+    .header p  { margin-top: .3rem; font-size: .8rem; color: #aaa; }
     .pairing {
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 1.25rem;
-    }
-    .section-label {
-      font-size: .72rem;
-      font-weight: 600;
-      letter-spacing: .08em;
-      text-transform: uppercase;
-      color: var(--muted);
-      align-self: flex-start;
+      gap: 1.75rem;
+      width: 100%;
+      max-width: 320px;
     }
     .qr-wrap {
       background: #fff;
-      border-radius: .875rem;
+      border: 1px solid #e5e5e5;
+      border-radius: .5rem;
       padding: .875rem;
       display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      overflow: hidden;
     }
     /* scaleX(0.83): corrects monospace char aspect ratio for block QR art.
        Courier New chars are ~0.6× as wide as tall; each text line = 2 QR rows,
        so the ideal ratio is 0.5. Factor = 0.5/0.601 ≈ 0.83. */
     .qr-wrap pre {
       font-family: "Courier New", monospace;
-      font-size: 14px;
+      font-size: 13px;
       line-height: 1;
       letter-spacing: 0;
       color: #000;
@@ -167,111 +121,72 @@ export class QrWebServer {
       transform-origin: center;
       display: block;
     }
-    .pin {
-      font-size: 2.6rem;
-      font-weight: 700;
-      letter-spacing: .18em;
-      color: var(--yellow);
-      font-variant-numeric: tabular-nums;
+    .pin-block { text-align: center; }
+    .pin-block .label {
+      font-size: .7rem; color: #aaa;
+      letter-spacing: .08em; text-transform: uppercase; margin-bottom: .5rem;
     }
-    .hint {
-      font-size: .78rem;
-      color: var(--muted);
-      text-align: center;
-      line-height: 1.6;
-      max-width: 280px;
+    .pin-block .pin {
+      font-size: 2rem; font-weight: 600; letter-spacing: .18em;
+      color: #1a1a1a; font-variant-numeric: tabular-nums;
     }
-    .hint strong { color: var(--text); font-weight: 600; }
-    .status-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: .75rem;
+    .pin-block .hint { margin-top: .65rem; font-size: .75rem; color: #aaa; line-height: 1.6; }
+    .status {
+      width: 100%; max-width: 320px;
+      border-top: 1px solid #ebebeb;
+      padding-top: 2rem;
     }
-    .stat-cell {
-      background: rgba(255,255,255,.04);
-      border: 1px solid var(--border);
-      border-radius: 1rem;
-      padding: .9rem 1rem;
-      display: flex;
-      flex-direction: column;
-      gap: .3rem;
+    .status-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: .6rem 0; border-bottom: 1px solid #ebebeb; font-size: .82rem;
     }
-    .stat-cell.wide {
-      grid-column: span 2;
-      flex-direction: row;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .stat-label { font-size: .72rem; color: var(--muted); font-weight: 500; }
-    .stat-value { font-size: .92rem; font-weight: 600; color: var(--text); }
-    .stat-value.green  { color: var(--green); }
-    .stat-value.yellow { color: var(--yellow); }
-    .stat-value.red    { color: var(--red); }
-    .dot {
-      display: inline-block;
-      width: 7px; height: 7px;
-      border-radius: 50%;
-      margin-right: .35rem;
-      vertical-align: middle;
-    }
-    .dot.green { background: var(--green); box-shadow: 0 0 5px var(--green); }
-    .dot.red   { background: var(--red);   box-shadow: 0 0 5px var(--red); }
+    .status-row:last-child { border-bottom: none; }
+    .status-row .name { color: #888; }
+    .status-row .val  { color: #1a1a1a; display: flex; align-items: center; gap: .45rem; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .dot.green  { background: #22c55e; }
+    .dot.red    { background: #ef4444; }
+    .dot.yellow { background: #f59e0b; }
+    .footer { padding-top: 1.5rem; font-size: .72rem; color: #ccc; text-align: center; }
   </style>
 </head>
 <body>
-  <div class="name-row">
-    <div>
-      <div class="cam-name">${esc(this.cameraName)}</div>
-      <div class="cam-sub">HomeKit pairing</div>
-    </div>
-    <div class="host-chip">${esc(hostname)}.local</div>
+  <div class="header">
+    <h1>${esc(this.cameraName)}</h1>
+    <p>${esc(hostname)}.local</p>
   </div>
 
-  <div class="card">
-    <div class="card-section pairing">
-      <span class="section-label">Pair with Home app</span>
-      <div class="qr-wrap">${this._qrBlock}</div>
+  <div class="pairing">
+    <div class="qr-wrap">${this._qrBlock}</div>
+    <div class="pin-block">
+      <div class="label">Setup code</div>
       <div class="pin">${esc(pin)}</div>
-      <p class="hint">
-        Open <strong>Home</strong> → <strong>+</strong> → <strong>Add Accessory</strong>,
-        scan the QR code or tap <em>More options…</em> and enter the code.
-      </p>
+      <div class="hint">Home → + → Add Accessory → scan or enter code</div>
     </div>
+  </div>
 
-    <div class="card-section">
-      <div class="status-grid">
-        <div class="stat-cell">
-          <div class="stat-label">pi4cam-homekit</div>
-          <div class="stat-value green">${dot(true)}Running</div>
-          <div class="stat-label">uptime ${esc(uptime)}</div>
-        </div>
-        <div class="stat-cell">
-          <div class="stat-label">pi4cam</div>
-          <div class="stat-value ${snapshotFresh ? "green" : "red"}">${dot(snapshotFresh)}${snapshotFresh ? "Running" : "Stale"}</div>
-          <div class="stat-label">${snapshotFresh ? "snapshot fresh" : "snapshot stale"}</div>
-        </div>
-        <div class="stat-cell">
-          <div class="stat-label">mediamtx</div>
-          <div class="stat-value ${mediamtxOk ? "green" : "red"}">${dot(mediamtxOk)}${mediamtxOk ? "Running" : "Down"}</div>
-          <div class="stat-label">RTSP :8554</div>
-        </div>
-        <div class="stat-cell">
-          <div class="stat-label">CPU temp</div>
-          <div class="stat-value yellow">${esc(cpuTemp)}</div>
-          <div class="stat-label">nominal</div>
-        </div>
-        <div class="stat-cell wide">
-          <div>
-            <div class="stat-label">Motion events</div>
-            <div class="stat-value">${motionCount} detection${motionCount !== 1 ? "s" : ""}</div>
-          </div>
-          ${motionAgo ? `<div style="text-align:right">
-            <div class="stat-label">Last trigger</div>
-            <div class="stat-value" style="font-size:.82rem;color:var(--muted)">${esc(motionAgo)}</div>
-          </div>` : ""}
-        </div>
-      </div>
+  <div class="status">
+    <div class="status-row">
+      <span class="name">pi4cam-homekit</span>
+      <span class="val"><span class="dot green"></span>uptime ${esc(uptime)}</span>
     </div>
+    <div class="status-row">
+      <span class="name">pi4cam</span>
+      <span class="val"><span class="dot ${snapshotFresh ? "green" : "red"}"></span>${snapshotFresh ? "snapshot fresh" : "snapshot stale"}</span>
+    </div>
+    <div class="status-row">
+      <span class="name">mediamtx</span>
+      <span class="val"><span class="dot ${mediamtxOk ? "green" : "red"}"></span>${mediamtxOk ? "RTSP :8554" : "down"}</span>
+    </div>
+    <div class="status-row">
+      <span class="name">CPU</span>
+      <span class="val"><span class="dot yellow"></span>${esc(cpuTemp)}</span>
+    </div>
+    <div class="status-row">
+      <span class="name">Motion</span>
+      <span class="val">${motionCount} event${motionCount !== 1 ? "s" : ""}${motionAgo ? ` — last ${esc(motionAgo)}` : ""}</span>
+    </div>
+    <div class="footer">pi4-IA-Homekit-Camera</div>
   </div>
 </body>
 </html>`;
