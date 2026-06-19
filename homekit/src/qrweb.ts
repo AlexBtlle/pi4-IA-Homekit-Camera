@@ -58,118 +58,135 @@ export class QrWebServer {
       this._cpuTemp(),
     ]);
 
-    const uptime = formatUptime(process.uptime());
+    const uptime  = formatUptime(process.uptime());
     const motionStats = this.motionService?.getStats();
+    const hostname = os.hostname();
 
-    const dot = (ok: boolean) => ok ? "🟢" : "🔴";
+    const dot = (ok: boolean) =>
+      `<span class="dot ${ok ? "green" : "red"}"></span>`;
 
-    let motionLine = "Motion events: 0";
-    if (motionStats && motionStats.triggerCount > 0) {
-      const ago = formatAgo(motionStats.lastTrigger!);
-      motionLine = `Motion events: ${motionStats.triggerCount} — last ${ago}`;
-    }
+    const motionCount = motionStats?.triggerCount ?? 0;
+    const motionAgo   = motionStats?.lastTrigger
+      ? formatAgo(motionStats.lastTrigger)
+      : null;
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>${esc(this.cameraName)} — HomeKit Pairing</title>
+  <title>${esc(this.cameraName)} — HomeKit</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      background: #1c1c1e;
-      color: #f2f2f7;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #fff;
+      color: #1a1a1a;
+      font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
       min-height: 100dvh;
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
-      padding: 2rem 1rem;
+      padding: 2rem 1.5rem 4rem;
       gap: 2rem;
     }
-    header { text-align: center; }
-    header h1 { font-size: 1.5rem; font-weight: 600; }
-    header p  { margin-top: .4rem; color: #aeaeb2; font-size: .9rem; }
-    .card {
-      background: #2c2c2e;
-      border-radius: 1.25rem;
-      padding: 2rem;
+    .header { text-align: center; }
+    .header h1 { font-size: .9rem; font-weight: 500; color: #1a1a1a; letter-spacing: -.01em; }
+    .header h1 span { color: #bbb; font-weight: 400; }
+    .pairing {
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 1.5rem;
-      max-width: 420px;
+      gap: 1.75rem;
       width: 100%;
+      max-width: 320px;
     }
-    pre {
-      font-family: "Courier New", Courier, monospace;
-      font-size: .65rem;
+    .qr-wrap {
+      background: #fff;
+      border: 1px solid #e5e5e5;
+      border-radius: .5rem;
+      padding: .875rem;
+      display: inline-flex;
+    }
+    /* scaleX(0.83): corrects monospace char aspect ratio for block QR art.
+       Courier New chars are ~0.6× as wide as tall; each text line = 2 QR rows,
+       so the ideal ratio is 0.5. Factor = 0.5/0.601 ≈ 0.83. */
+    .qr-wrap pre {
+      font-family: "Courier New", monospace;
+      font-size: 13px;
       line-height: 1;
       letter-spacing: 0;
-      background: #fff;
       color: #000;
-      padding: .75rem;
-      border-radius: .75rem;
       user-select: none;
+      transform: scaleX(0.83);
+      transform-origin: center;
+      display: block;
     }
-    .pin-label { color: #aeaeb2; font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; }
-    .pin {
-      font-size: 2.2rem;
-      font-weight: 700;
-      letter-spacing: .15em;
-      color: #ffd60a;
+    .pin-block { text-align: center; }
+    .pin-block .label {
+      font-size: .7rem; color: #aaa;
+      letter-spacing: .08em; text-transform: uppercase; margin-bottom: .5rem;
     }
-    .hint { color: #aeaeb2; font-size: .82rem; text-align: center; line-height: 1.5; }
-    .hint strong { color: #f2f2f7; }
+    .pin-block .pin {
+      font-size: 2rem; font-weight: 600; letter-spacing: .18em;
+      color: #1a1a1a; font-variant-numeric: tabular-nums;
+    }
+    .pin-block .hint { margin-top: .65rem; font-size: .75rem; color: #aaa; line-height: 1.6; }
     .status {
-      width: 100%;
-      display: flex;
-      flex-direction: column;
-      gap: .55rem;
-      border-top: 1px solid #3a3a3c;
-      padding-top: 1.25rem;
+      width: 100%; max-width: 320px;
+      border-top: 1px solid #ebebeb;
+      padding-top: 2rem;
     }
     .status-row {
-      display: flex;
-      justify-content: space-between;
-      font-size: .85rem;
+      display: flex; justify-content: space-between; align-items: center;
+      padding: .6rem 0; border-bottom: 1px solid #ebebeb; font-size: .82rem;
     }
-    .status-row .label { color: #aeaeb2; }
-    .status-row .value { color: #f2f2f7; }
-    .divider { border: none; border-top: 1px solid #3a3a3c; margin: .25rem 0; }
-    .motion-line {
-      font-size: .82rem;
-      color: #aeaeb2;
-      text-align: center;
-    }
-    footer { color: #636366; font-size: .75rem; }
+    .status-row:last-child { border-bottom: none; }
+    .status-row .name { color: #888; }
+    .status-row .val  { color: #1a1a1a; display: flex; align-items: center; gap: .45rem; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .dot.green  { background: #22c55e; }
+    .dot.red    { background: #ef4444; }
+    .dot.yellow { background: #f59e0b; }
+    .footer { padding-top: 1.5rem; font-size: .72rem; color: #ccc; text-align: center; }
   </style>
 </head>
 <body>
-  <header>
-    <h1>${esc(this.cameraName)}</h1>
-    <p>HomeKit pairing</p>
-  </header>
-  <div class="card">
-    ${this._qrBlock}
-    <p class="pin-label">Setup code</p>
-    <p class="pin">${esc(pin)}</p>
-    <p class="hint">
-      Open <strong>Home</strong> → <strong>+</strong> → <strong>Add Accessory</strong>
-      and scan the QR code above, or tap <em>More options…</em> and enter the code.
-    </p>
-    <div class="status">
-      <div class="status-row"><span class="label">${dot(true)} pi4cam-homekit</span><span class="value">uptime ${esc(uptime)}</span></div>
-      <div class="status-row"><span class="label">${dot(snapshotFresh)} pi4cam</span><span class="value">${snapshotFresh ? "snapshot fresh" : "snapshot stale"}</span></div>
-      <div class="status-row"><span class="label">${dot(mediamtxOk)} mediamtx</span><span class="value">RTSP :8554</span></div>
-      <hr class="divider">
-      <div class="status-row"><span class="label">🌡 CPU</span><span class="value">${esc(cpuTemp)}</span></div>
-      <p class="motion-line">${esc(motionLine)}</p>
+  <div class="header">
+    <h1>${esc(this.cameraName)} <span>· ${esc(hostname)}.local</span></h1>
+  </div>
+
+  <div class="pairing">
+    <div class="qr-wrap">${this._qrBlock}</div>
+    <div class="pin-block">
+      <div class="label">Setup code</div>
+      <div class="pin">${esc(pin)}</div>
+      <div class="hint">Home → + → Add Accessory → scan or enter code</div>
     </div>
   </div>
-  <footer>pi4-IA-Homekit-Camera</footer>
+
+  <div class="status">
+    <div class="status-row">
+      <span class="name">pi4cam-homekit</span>
+      <span class="val"><span class="dot green"></span>uptime ${esc(uptime)}</span>
+    </div>
+    <div class="status-row">
+      <span class="name">pi4cam</span>
+      <span class="val"><span class="dot ${snapshotFresh ? "green" : "red"}"></span>${snapshotFresh ? "snapshot fresh" : "snapshot stale"}</span>
+    </div>
+    <div class="status-row">
+      <span class="name">mediamtx</span>
+      <span class="val"><span class="dot ${mediamtxOk ? "green" : "red"}"></span>${mediamtxOk ? "RTSP :8554" : "down"}</span>
+    </div>
+    <div class="status-row">
+      <span class="name">CPU</span>
+      <span class="val"><span class="dot yellow"></span>${esc(cpuTemp)}</span>
+    </div>
+    <div class="status-row">
+      <span class="name">Motion</span>
+      <span class="val">${motionCount} event${motionCount !== 1 ? "s" : ""}${motionAgo ? ` — last ${esc(motionAgo)}` : ""}</span>
+    </div>
+    <div class="footer">pi4-IA-Homekit-Camera</div>
+  </div>
 </body>
 </html>`;
   }

@@ -57,6 +57,10 @@ class CameraManager:
         self._ir_mode = False
         self._ir_gain_baseline: tuple | None = None
         self._latest_colour_gains: tuple | None = None
+        self._latest_lux: float | None = None
+        # When gains/lux signal a possible exit we restore saturation for one
+        # snapshot so _is_infrared() can run on an actual colour frame.
+        self._ir_pending_check: bool = False
 
         self._picam2 = None
         self._encoder = None
@@ -78,6 +82,12 @@ class CameraManager:
         self._watchdog_thread = threading.Thread(
             target=self._watchdog_run, daemon=True, name="frame-watchdog"
         )
+
+        # Throttle lores extraction to analysis_fps so make_array("lores") is not
+        # called 30×/s when the detector only needs 10×/s — biggest CPU saving.
+        _det_fps = float(config.get("detection", {}).get("analysis_fps", 10))
+        self._lores_interval = 1.0 / _det_fps if _det_fps > 0 else 0.0
+        self._last_lores_time: float = 0.0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -251,7 +261,13 @@ class CameraManager:
 
     def _lores_callback(self, request) -> None:
         """Called by picamera2's capture thread on every frame. Must be fast."""
-        self._last_frame_time = time.monotonic()
+        now = time.monotonic()
+        self._last_frame_time = now  # always update for the watchdog
+
+        if self._lores_interval > 0 and now - self._last_lores_time < self._lores_interval:
+            return  # skip: detector doesn't need this frame yet
+        self._last_lores_time = now
+
         arr = request.make_array("lores")
         y_plane = arr[:self._lores_h, :self._lores_w].copy()
         with self._lores_condition:
@@ -262,9 +278,12 @@ class CameraManager:
                 and time.monotonic() - self._last_snapshot >= self._snapshot_interval):
             self._last_snapshot = time.monotonic()
             try:
-                self._latest_colour_gains = request.get_metadata().get("ColourGains")
+                meta = request.get_metadata()
+                self._latest_colour_gains = meta.get("ColourGains")
+                self._latest_lux = meta.get("Lux")
             except Exception:
                 self._latest_colour_gains = None
+                self._latest_lux = None
             main_arr = request.make_array("main").copy()
             try:
                 self._snapshot_queue.put_nowait(main_arr)
@@ -297,15 +316,41 @@ class CameraManager:
         Decide whether the current scene is infrared (night vision) and keep the
         ISP Saturation in sync. Returns True when the frame should be grayscale.
 
-        Stream desaturation needs an AWB-gain signal to exit night mode (the pink
-        detector goes blind once Saturation is 0). When ColourGains aren't exposed
-        by the sensor, we fall back to a stateless per-snapshot colour test that
-        only greys the thumbnail, leaving the stream untouched.
+        Exit strategy uses two signals:
+        - ColourGains drift > ir_exit_margin from the night baseline
+        - Lux > 50 (visible light detected — 850 nm IR reads as ~0 lux)
+
+        When either fires we restore saturation and wait for the *next* snapshot
+        (now in colour) to confirm with _is_infrared(). This avoids false exits
+        caused by momentary AWB oscillations and the classic dead-lock where
+        _is_infrared() always returns False on a grayscale thumbnail.
         """
+        if not self._ir_grayscale:
+            return False
+
         gains = self._latest_colour_gains
-        if not self._ir_grayscale or not gains:
+
+        # ── Pending confirmation ──────────────────────────────────────────────
+        # Saturation was restored last frame; this thumbnail is now in colour.
+        if self._ir_pending_check:
+            self._ir_pending_check = False
+            if self._is_infrared(thumb):
+                # IR still active → stay in night mode
+                self._ir_mode = True
+                self._ir_gain_baseline = gains
+                self._set_saturation(0.0)
+                logger.debug("Night mode re-confirmed via colour check")
+            else:
+                self._ir_mode = False
+                self._ir_gain_baseline = None
+                logger.info("Daylight confirmed via colour check → colour stream")
+            return self._ir_mode
+
+        # ── No ColourGains: stateless fallback (thumbnail-only, no ISP change) ──
+        if not gains:
             return self._is_infrared(thumb)
 
+        # ── Not in night mode: check for entry ───────────────────────────────
         if not self._ir_mode:
             if self._is_infrared(thumb):
                 self._ir_mode = True
@@ -315,15 +360,26 @@ class CameraManager:
                     "Night vision detected (ColourGains=%s) → grayscale stream",
                     tuple(round(g, 2) for g in gains),
                 )
-        elif self._ir_gain_baseline and self._gains_deviate(
-                gains, self._ir_gain_baseline, self._ir_exit_margin):
-            self._ir_mode = False
-            self._ir_gain_baseline = None
+            return self._ir_mode
+
+        # ── In night mode: check for exit ────────────────────────────────────
+        lux = self._latest_lux
+        gains_shifted = (
+            self._ir_gain_baseline is not None
+            and self._gains_deviate(gains, self._ir_gain_baseline, self._ir_exit_margin)
+        )
+        lux_daylight = lux is not None and lux > 50
+
+        if gains_shifted or lux_daylight:
+            # Restore colour for one snapshot to confirm with _is_infrared()
             self._set_saturation(self._saturation)
+            self._ir_pending_check = True
             logger.info(
-                "Daylight restored (ColourGains=%s) → colour stream",
+                "Possible daylight (ColourGains=%s, Lux=%s) → colour check next frame",
                 tuple(round(g, 2) for g in gains),
+                f"{lux:.0f}" if lux is not None else "N/A",
             )
+
         return self._ir_mode
 
     def _snapshot_worker(self) -> None:
