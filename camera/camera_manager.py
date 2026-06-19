@@ -57,8 +57,7 @@ class CameraManager:
         self._ir_mode = False
         self._ir_gain_baseline: tuple | None = None
         self._latest_colour_gains: tuple | None = None
-        self._latest_lux: float | None = None
-        # When gains/lux signal a possible exit we restore saturation for one
+        # When gains signal a possible exit we restore saturation for one
         # snapshot so _is_infrared() can run on an actual colour frame.
         self._ir_pending_check: bool = False
 
@@ -278,12 +277,9 @@ class CameraManager:
                 and time.monotonic() - self._last_snapshot >= self._snapshot_interval):
             self._last_snapshot = time.monotonic()
             try:
-                meta = request.get_metadata()
-                self._latest_colour_gains = meta.get("ColourGains")
-                self._latest_lux = meta.get("Lux")
+                self._latest_colour_gains = request.get_metadata().get("ColourGains")
             except Exception:
                 self._latest_colour_gains = None
-                self._latest_lux = None
             main_arr = request.make_array("main").copy()
             try:
                 self._snapshot_queue.put_nowait(main_arr)
@@ -316,14 +312,15 @@ class CameraManager:
         Decide whether the current scene is infrared (night vision) and keep the
         ISP Saturation in sync. Returns True when the frame should be grayscale.
 
-        Exit strategy uses two signals:
-        - ColourGains drift > ir_exit_margin from the night baseline
-        - Lux > 50 (visible light detected — 850 nm IR reads as ~0 lux)
+        Exit strategy: when ColourGains drift more than ir_exit_margin from the
+        night baseline, restore saturation and wait for the *next* snapshot
+        (now in colour) to confirm with _is_infrared(). This two-step approach
+        avoids false exits from momentary AWB oscillations and the dead-lock
+        where _is_infrared() always returns False on a grayscale thumbnail.
 
-        When either fires we restore saturation and wait for the *next* snapshot
-        (now in colour) to confirm with _is_infrared(). This avoids false exits
-        caused by momentary AWB oscillations and the classic dead-lock where
-        _is_infrared() always returns False on a grayscale thumbnail.
+        Note: Lux is NOT used as an exit signal — 850 nm IR LEDs produce
+        ~200+ lux on sensors that respond to near-IR, making Lux useless for
+        distinguishing IR illumination from visible daylight.
         """
         if not self._ir_grayscale:
             return False
@@ -363,21 +360,20 @@ class CameraManager:
             return self._ir_mode
 
         # ── In night mode: check for exit ────────────────────────────────────
-        lux = self._latest_lux
         gains_shifted = (
             self._ir_gain_baseline is not None
             and self._gains_deviate(gains, self._ir_gain_baseline, self._ir_exit_margin)
         )
-        lux_daylight = lux is not None and lux > 50
 
-        if gains_shifted or lux_daylight:
-            # Restore colour for one snapshot to confirm with _is_infrared()
+        if gains_shifted:
+            # Restore colour for one snapshot to confirm with _is_infrared().
+            # This avoids false exits from momentary AWB oscillations: the next
+            # thumbnail will be in colour so _is_infrared() has a real signal.
             self._set_saturation(self._saturation)
             self._ir_pending_check = True
             logger.info(
-                "Possible daylight (ColourGains=%s, Lux=%s) → colour check next frame",
+                "ColourGains shifted (ColourGains=%s) → colour check next frame",
                 tuple(round(g, 2) for g in gains),
-                f"{lux:.0f}" if lux is not None else "N/A",
             )
 
         return self._ir_mode
