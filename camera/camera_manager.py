@@ -54,19 +54,16 @@ class CameraManager:
         # entire pipeline (stream + snapshot) goes grayscale at zero CPU cost.
         self._ir_grayscale = bool(self._cfg.get("ir_grayscale", True))
         self._ir_exit_margin = float(self._cfg.get("ir_exit_margin", 0.25))
-        # Seconds between forced colour probes while in night mode. ColourGains
-        # alone are not a reliable exit signal (they often barely shift between
-        # IR illumination and daylight), so we periodically restore colour for
-        # one snapshot and re-test the pink cast directly. This guarantees exit.
+        # Seconds between "colour probes" while in night mode. A probe captures
+        # one extra frame with saturation briefly restored, then immediately
+        # reverts to grayscale — the H264 stream sees one colour frame (~33 ms).
+        # This is the only reliable way to detect the IR-to-daylight transition
+        # (ColourGains and Lux both fail with 850 nm LEDs).
         self._ir_probe_interval = float(self._cfg.get("ir_probe_interval", 90))
         self._ir_mode = False
         self._ir_gain_baseline: tuple | None = None
         self._ir_last_probe: float = 0.0
         self._latest_colour_gains: tuple | None = None
-        # When a probe (gain drift or periodic) signals a possible exit we
-        # restore saturation for one snapshot so _is_infrared() can run on an
-        # actual colour frame.
-        self._ir_pending_check: bool = False
 
         self._picam2 = None
         self._encoder = None
@@ -314,23 +311,40 @@ class CameraManager:
             except Exception:
                 logger.debug("set_controls(Saturation) failed", exc_info=True)
 
+    def _ir_probe(self) -> bool:
+        """
+        Capture one extra frame with ISP colour temporarily restored, then
+        immediately revert to saturation=0. Returns True if the scene is still
+        infrared (stay in night mode).
+
+        The H264 stream sees exactly one colour frame (~33 ms at 30 fps) during
+        the probe — imperceptible in practice. This is the only reliable way to
+        detect the IR→daylight transition: ColourGains and Lux are both useless
+        with 850 nm illumination, and the regular snapshot is already grayscale
+        (saturation=0), so _is_infrared() can't run on it directly.
+        """
+        if self._picam2 is None:
+            return self._ir_mode
+
+        self._set_saturation(self._saturation)
+        try:
+            arr = self._picam2.capture_array("main")
+        except Exception:
+            logger.debug("IR probe capture failed", exc_info=True)
+            self._set_saturation(0.0)
+            return self._ir_mode
+        self._set_saturation(0.0)
+
+        bgr = cv2.cvtColor(arr, cv2.COLOR_YUV2BGR_I420)
+        small = cv2.resize(bgr, (160, 120), interpolation=cv2.INTER_AREA)
+        return self._is_infrared(small)
+
     def _update_night_mode(self, thumb: np.ndarray) -> bool:
         """
-        Decide whether the current scene is infrared (night vision) and keep the
-        ISP Saturation in sync. Returns True when the frame should be grayscale.
-
-        Exit strategy: once the stream is grayscale we have no colour signal, so
-        the only reliable way to know IR has stopped is to briefly restore colour
-        and look. Two triggers schedule that colour probe:
-          • a periodic timer (ir_probe_interval) — the guaranteed exit path;
-          • an AWB ColourGains drift past ir_exit_margin — an optional fast path.
-        Either trigger restores saturation for one snapshot; the *next* (now
-        colour) thumbnail is re-tested with _is_infrared() to confirm. The probe
-        only flashes the live H264 stream — snapshots stay grayscale throughout.
-
-        Note: neither Lux nor ColourGains alone are reliable exit signals — 850 nm
-        IR LEDs read as ~200+ lux and barely move the AWB gains, so the periodic
-        colour probe is what actually ends night mode.
+        Decide whether the current scene is infrared and keep ISP Saturation in
+        sync. Returns True when the frame should be converted to grayscale.
+        `thumb` is a colour BGR frame when not in night mode, or grayscale when
+        already in night mode (saturation=0 zeros the UV channels).
         """
         if not self._ir_grayscale:
             return False
@@ -338,24 +352,7 @@ class CameraManager:
         gains = self._latest_colour_gains
         now = time.monotonic()
 
-        # ── Pending confirmation ──────────────────────────────────────────────
-        # Saturation was restored last frame; this thumbnail is now in colour.
-        if self._ir_pending_check:
-            self._ir_pending_check = False
-            self._ir_last_probe = now
-            if self._is_infrared(thumb):
-                # IR still active → stay in night mode
-                self._ir_mode = True
-                self._ir_gain_baseline = gains
-                self._set_saturation(0.0)
-                logger.debug("Night mode re-confirmed via colour probe")
-            else:
-                self._ir_mode = False
-                self._ir_gain_baseline = None
-                logger.info("Daylight confirmed via colour probe → colour stream")
-            return self._ir_mode
-
-        # ── Not in night mode: check for entry (thumbnail is colour) ──────────
+        # ── Entry: thumbnail is colour (saturation=1.0) ──────────────────────
         if not self._ir_mode:
             if self._is_infrared(thumb):
                 self._ir_mode = True
@@ -368,7 +365,7 @@ class CameraManager:
                 )
             return self._ir_mode
 
-        # ── In night mode: schedule a colour probe to test for exit ──────────
+        # ── In night mode: probe periodically or on fast-path AWB drift ──────
         gains_shifted = (
             gains is not None
             and self._ir_gain_baseline is not None
@@ -377,15 +374,17 @@ class CameraManager:
         probe_due = (now - self._ir_last_probe) >= self._ir_probe_interval
 
         if gains_shifted or probe_due:
-            # Restore colour for one snapshot so the next thumbnail carries a
-            # real signal for _is_infrared(). Snapshots stay grayscale (we still
-            # return True below); only the live stream briefly shows colour.
-            self._set_saturation(self._saturation)
-            self._ir_pending_check = True
-            logger.info(
-                "IR exit probe (%s) → colour check next frame",
-                "gains shifted" if gains_shifted else "periodic",
-            )
+            reason = "gains shifted" if gains_shifted else "periodic"
+            logger.info("IR exit probe (%s) → extra colour capture", reason)
+            still_ir = self._ir_probe()
+            self._ir_last_probe = now
+            if not still_ir:
+                self._ir_mode = False
+                self._ir_gain_baseline = None
+                logger.info("Daylight confirmed → colour stream")
+            else:
+                self._ir_gain_baseline = gains
+                logger.debug("Night mode re-confirmed")
 
         return self._ir_mode
 
