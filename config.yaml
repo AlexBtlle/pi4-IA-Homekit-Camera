@@ -44,7 +44,9 @@ camera:
   sharpness: 1.0          # ISP sharpness 0.0–16.0 (1.0 = default; try 1.5–2.0 for crisper edges)
   contrast: 1.0           # ISP contrast  0.0–32.0 (1.0 = default)
   saturation: 1.0         # ISP saturation 0.0–32.0 (1.0 = default; try 1.2–1.5 for richer colours)
-  ir_grayscale: true      # auto-switch stream + snapshot to grayscale at night (kills the IR pink cast)
+  ir_grayscale: false     # [BETA] auto-switch stream + snapshot to grayscale at night when IR LEDs
+                          # cause a pink cast. Exit detection uses periodic colour probes. Set to true
+                          # to enable — behaviour may change in future releases.
   ir_probe_interval: 90   # seconds between colour probes in night mode — restores colour for one
                           # snapshot (~5 s on Pi Zero 2W), checks for IR, then reverts to grayscale
 
