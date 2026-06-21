@@ -66,3 +66,4 @@ detection:
   min_motion_area: 1500   # tuned for humans; reduce to ~600 for cats/dogs
   cooldown: 30            # seconds before re-triggering after a detection
   analysis_fps: 10        # MOG2 analysis rate — Pi Zero 2W: 5 | Pi 3: 8 | Pi 4: 10
+  mog2_detect_shadows: false  # shadow detection in MOG2 (more CPU, rarely useful)

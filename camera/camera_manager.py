@@ -60,7 +60,6 @@ class CameraManager:
         self._ir_mode = False
         self._ir_last_probe: float = 0.0
         self._ir_pending_check: bool = False
-        self._latest_colour_gains: tuple | None = None
 
         self._picam2 = None
         self._encoder = None
@@ -192,10 +191,9 @@ class CameraManager:
                 self._picam2.stop()
             except Exception:
                 logger.debug("Picamera2 stop error", exc_info=True)
-        for fd in (self._pipe_r,):
+        if self._pipe_r != -1:
             try:
-                if fd != -1:
-                    os.close(fd)
+                os.close(self._pipe_r)
             except OSError:
                 pass
         logger.info("CameraManager stopped")
@@ -277,10 +275,6 @@ class CameraManager:
         if (self._snapshot_interval > 0
                 and time.monotonic() - self._last_snapshot >= self._snapshot_interval):
             self._last_snapshot = time.monotonic()
-            try:
-                self._latest_colour_gains = request.get_metadata().get("ColourGains")
-            except Exception:
-                self._latest_colour_gains = None
             main_arr = request.make_array("main").copy()
             try:
                 self._snapshot_queue.put_nowait(main_arr)
@@ -341,11 +335,7 @@ class CameraManager:
                 self._ir_mode = True
                 self._ir_last_probe = now
                 self._set_saturation(0.0)
-                logger.info(
-                    "Night vision detected (ColourGains=%s) → grayscale stream",
-                    tuple(round(g, 2) for g in self._latest_colour_gains)
-                    if self._latest_colour_gains else None,
-                )
+                logger.info("Night vision detected → grayscale stream")
             return self._ir_mode
 
         # ── In night mode: fire a probe when the timer expires ────────────────

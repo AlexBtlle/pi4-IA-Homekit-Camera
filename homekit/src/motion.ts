@@ -62,9 +62,7 @@ export class MotionService {
     this._triggerCount++;
     console.log("[motion] motion detected → sensor active");
 
-    if (this.resetTimer) {
-      clearTimeout(this.resetTimer);
-    }
+    clearTimeout(this.resetTimer);
     this.resetTimer = setTimeout(() => {
       sensor.updateCharacteristic(Characteristic.MotionDetected, false);
       console.log("[motion] sensor reset");
@@ -72,9 +70,7 @@ export class MotionService {
   }
 
   stop(): void {
-    if (this.resetTimer) {
-      clearTimeout(this.resetTimer);
-    }
+    clearTimeout(this.resetTimer);
     this.server?.close();
   }
 }
