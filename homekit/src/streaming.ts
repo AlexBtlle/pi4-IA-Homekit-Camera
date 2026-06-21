@@ -166,6 +166,17 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       // Program-friendly progress on stdout → we know when frames start flowing.
       "-progress",
       "pipe:1",
+      // Low-latency input: mediamtx's RTSP SDP carries the H264 codec params,
+      // so ffmpeg needs almost no probing — start copying at the first keyframe
+      // instead of buffering/analysing for up to 5 s.
+      "-fflags",
+      "nobuffer",
+      "-flags",
+      "low_delay",
+      "-analyzeduration",
+      "0",
+      "-probesize",
+      "32",
       "-rtsp_transport",
       "tcp",
       "-i",

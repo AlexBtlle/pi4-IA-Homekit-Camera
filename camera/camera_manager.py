@@ -141,12 +141,13 @@ class CameraManager:
         self._picam2.pre_callback = self._lores_callback
 
         self._pipe_r, self._pipe_w = os.pipe()
-        # iperiod = 4 × fps → a keyframe every 4 s, matching HKSV's default
-        # fragment length. The recording pipeline fragments on keyframes
-        # (movflags frag_keyframe), so a 4 s GOP yields clean 4 s fMP4
-        # fragments without any re-encoding.
+        # iperiod = 2 × fps → a keyframe every 2 s. Live view (-c:v copy) can
+        # only render once it receives a keyframe, so a shorter GOP cuts the
+        # time-to-first-frame in half. HKSV still works: the prebuffer fragments
+        # on each keyframe (movflags frag_keyframe), yielding clean 2 s fMP4
+        # fragments — the declared 4 s fragmentLength is only a hint.
         self._encoder = H264Encoder(
-            bitrate=self._bitrate, iperiod=self._fps * 4, profile="high"
+            bitrate=self._bitrate, iperiod=self._fps * 2, profile="high"
         )
 
         self._last_frame_time = time.monotonic()
