@@ -129,7 +129,7 @@ class PresenceDetector:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            urllib.request.urlopen(req, timeout=2)
+            urllib.request.urlopen(req, timeout=5)
             logger.debug("Motion webhook OK")
         except Exception:
             logger.warning("Motion webhook failed", exc_info=True)

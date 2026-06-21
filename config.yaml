@@ -45,9 +45,8 @@ camera:
   contrast: 1.0           # ISP contrast  0.0–32.0 (1.0 = default)
   saturation: 1.0         # ISP saturation 0.0–32.0 (1.0 = default; try 1.2–1.5 for richer colours)
   ir_grayscale: true      # auto-switch stream + snapshot to grayscale at night (kills the IR pink cast)
-  ir_exit_margin: 0.25    # AWB-gain drift (fraction) that triggers an early colour probe (fast path)
-  ir_probe_interval: 90   # seconds between forced colour probes in night mode — the reliable exit path
-                          # (brief stream-only colour flash; lower = faster dawn exit, more flashes)
+  ir_probe_interval: 90   # seconds between colour probes in night mode — restores colour for one
+                          # snapshot (~5 s on Pi Zero 2W), checks for IR, then reverts to grayscale
 
 rtsp:
   port: 8554              # mediamtx RTSP port
