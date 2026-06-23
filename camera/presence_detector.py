@@ -34,9 +34,6 @@ class PresenceDetector:
         self._mog2_shadows = bool(cfg.get("mog2_detect_shadows", False))
         self._min_area = int(cfg.get("min_motion_area", 1500))
         self._cooldown = float(cfg.get("cooldown", 30))
-        analysis_fps = float(cfg.get("analysis_fps", 10))
-        self._frame_interval = 1.0 / analysis_fps if analysis_fps > 0 else 0.0
-        self._last_analysis = 0.0
 
         hk_cfg = config.get("homekit", {})
         motion_port = int(hk_cfg.get("motion_port", 8989))
@@ -74,10 +71,7 @@ class PresenceDetector:
         # Warmup: feed MOG2 at full frame rate so the background model stabilises
         # before we start triggering detections.
         warmup = self.WARMUP_FRAMES
-        logger.info(
-            "Detection loop starting — warmup %d frames then %.0f fps analysis",
-            warmup, 1.0 / self._frame_interval if self._frame_interval else 30,
-        )
+        logger.info("Detection loop starting — warmup %d frames", warmup)
         while not self._stop_event.is_set() and warmup > 0:
             frame = self._camera_manager.get_lores_frame(timeout=1.0)
             if frame is not None:
@@ -86,16 +80,8 @@ class PresenceDetector:
 
         logger.info("MOG2 warmup done — detection active")
 
-        # Detection: sleep for exactly frame_interval between analyses instead of
-        # waking on every camera frame (3× fewer wakeups at analysis_fps=10).
         while not self._stop_event.is_set():
-            if self._frame_interval > 0:
-                if self._stop_event.wait(self._frame_interval):
-                    break
-                frame = self._camera_manager.get_lores_frame(timeout=0.1)
-            else:
-                frame = self._camera_manager.get_lores_frame(timeout=1.0)
-
+            frame = self._camera_manager.get_lores_frame(timeout=1.0)
             if frame is None:
                 continue
 
@@ -114,7 +100,7 @@ class PresenceDetector:
 
             self._last_trigger = now
             logger.info("Motion detected — sending webhook (area=%d)", int(max_area))
-            threading.Thread(target=self._send_webhook, daemon=True).start()
+            self._send_webhook()
 
     # ------------------------------------------------------------------
     # Webhook
@@ -129,7 +115,7 @@ class PresenceDetector:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            urllib.request.urlopen(req, timeout=2)
+            urllib.request.urlopen(req, timeout=5)
             logger.debug("Motion webhook OK")
         except Exception:
             logger.warning("Motion webhook failed", exc_info=True)

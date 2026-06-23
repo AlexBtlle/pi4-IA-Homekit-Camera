@@ -16,9 +16,6 @@ export class SnapshotProvider {
     this.snapshotFile = path.join(os.tmpdir(), "pi4cam-snapshot.jpg");
   }
 
-  start(): void {}
-  stop(): void {}
-
   async get(): Promise<Buffer> {
     try {
       return await fs.readFile(this.snapshotFile);

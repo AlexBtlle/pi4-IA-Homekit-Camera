@@ -174,13 +174,11 @@ function main(): void {
   ).start();
 
   motion.start();
-  snapshots.start();
   printPairing(accessory, config.cameraName, pairing.pincode);
 
   const shutdown = () => {
     console.log("\n[pi4cam-homekit] shutting down…");
     qrWeb.stop();
-    snapshots.stop();
     motion.stop();
     accessory.unpublish();
     process.exit(0);

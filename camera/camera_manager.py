@@ -53,13 +53,12 @@ class CameraManager:
         # pink/magenta cast. We detect it and drop the ISP Saturation to 0 so the
         # entire pipeline (stream + snapshot) goes grayscale at zero CPU cost.
         self._ir_grayscale = bool(self._cfg.get("ir_grayscale", True))
-        self._ir_exit_margin = float(self._cfg.get("ir_exit_margin", 0.25))
+        # Seconds between colour probes in night mode. ColourGains proved too
+        # noisy with 850 nm LEDs (gains barely shift at dawn) and triggered probes
+        # in rapid bursts, so exit detection is timer-only.
+        self._ir_probe_interval = float(self._cfg.get("ir_probe_interval", 90))
         self._ir_mode = False
-        self._ir_gain_baseline: tuple | None = None
-        self._latest_colour_gains: tuple | None = None
-        self._latest_lux: float | None = None
-        # When gains/lux signal a possible exit we restore saturation for one
-        # snapshot so _is_infrared() can run on an actual colour frame.
+        self._ir_last_probe: float = 0.0
         self._ir_pending_check: bool = False
 
         self._picam2 = None
@@ -142,12 +141,13 @@ class CameraManager:
         self._picam2.pre_callback = self._lores_callback
 
         self._pipe_r, self._pipe_w = os.pipe()
-        # iperiod = 4 × fps → a keyframe every 4 s, matching HKSV's default
-        # fragment length. The recording pipeline fragments on keyframes
-        # (movflags frag_keyframe), so a 4 s GOP yields clean 4 s fMP4
-        # fragments without any re-encoding.
+        # iperiod = 2 × fps → a keyframe every 2 s. Live view (-c:v copy) can
+        # only render once it receives a keyframe, so a shorter GOP cuts the
+        # time-to-first-frame in half. HKSV still works: the prebuffer fragments
+        # on each keyframe (movflags frag_keyframe), yielding clean 2 s fMP4
+        # fragments — the declared 4 s fragmentLength is only a hint.
         self._encoder = H264Encoder(
-            bitrate=self._bitrate, iperiod=self._fps * 4, profile="high"
+            bitrate=self._bitrate, iperiod=self._fps * 2, profile="high"
         )
 
         self._last_frame_time = time.monotonic()
@@ -192,10 +192,9 @@ class CameraManager:
                 self._picam2.stop()
             except Exception:
                 logger.debug("Picamera2 stop error", exc_info=True)
-        for fd in (self._pipe_r,):
+        if self._pipe_r != -1:
             try:
-                if fd != -1:
-                    os.close(fd)
+                os.close(self._pipe_r)
             except OSError:
                 pass
         logger.info("CameraManager stopped")
@@ -277,13 +276,6 @@ class CameraManager:
         if (self._snapshot_interval > 0
                 and time.monotonic() - self._last_snapshot >= self._snapshot_interval):
             self._last_snapshot = time.monotonic()
-            try:
-                meta = request.get_metadata()
-                self._latest_colour_gains = meta.get("ColourGains")
-                self._latest_lux = meta.get("Lux")
-            except Exception:
-                self._latest_colour_gains = None
-                self._latest_lux = None
             main_arr = request.make_array("main").copy()
             try:
                 self._snapshot_queue.put_nowait(main_arr)
@@ -296,13 +288,6 @@ class CameraManager:
         mean = bgr.mean(axis=(0, 1))  # [B, G, R]
         return float(mean[2]) - float(mean[0]) > 25 and float(mean[2]) > 60
 
-    @staticmethod
-    def _gains_deviate(gains, baseline, margin: float) -> bool:
-        """True when either AWB gain has drifted more than `margin` from baseline."""
-        for cur, base in zip(gains, baseline):
-            if base and abs(cur - base) / base > margin:
-                return True
-        return False
 
     def _set_saturation(self, value: float) -> None:
         if self._picam2 is not None:
@@ -313,72 +298,52 @@ class CameraManager:
 
     def _update_night_mode(self, thumb: np.ndarray) -> bool:
         """
-        Decide whether the current scene is infrared (night vision) and keep the
-        ISP Saturation in sync. Returns True when the frame should be grayscale.
+        Decide whether the current scene is infrared and keep ISP Saturation in
+        sync. Returns True when the frame should be converted to grayscale.
 
-        Exit strategy uses two signals:
-        - ColourGains drift > ir_exit_margin from the night baseline
-        - Lux > 50 (visible light detected — 850 nm IR reads as ~0 lux)
+        Exit strategy — periodic colour probe:
+          1. When the timer fires, restore saturation and set _ir_pending_check.
+          2. The next snapshot arrives in colour (saturation=1.0); _is_infrared()
+             runs on it and decides.
+          3. Saturation reverts to 0 immediately after the check.
+        The live stream and snapshots show colour for at most one snapshot_interval
+        (~5 s on Pi Zero 2 W) per probe — once every ir_probe_interval seconds.
 
-        When either fires we restore saturation and wait for the *next* snapshot
-        (now in colour) to confirm with _is_infrared(). This avoids false exits
-        caused by momentary AWB oscillations and the classic dead-lock where
-        _is_infrared() always returns False on a grayscale thumbnail.
+        capture_array() is NOT used: calling it from a non-camera thread while the
+        H264 encoder is running causes picamera2 buffer contention and CPU spikes.
         """
         if not self._ir_grayscale:
             return False
 
-        gains = self._latest_colour_gains
+        now = time.monotonic()
 
-        # ── Pending confirmation ──────────────────────────────────────────────
-        # Saturation was restored last frame; this thumbnail is now in colour.
+        # ── Pending confirmation: this thumbnail is already in colour ─────────
         if self._ir_pending_check:
             self._ir_pending_check = False
+            self._ir_last_probe = now
             if self._is_infrared(thumb):
-                # IR still active → stay in night mode
-                self._ir_mode = True
-                self._ir_gain_baseline = gains
                 self._set_saturation(0.0)
-                logger.debug("Night mode re-confirmed via colour check")
+                logger.debug("Night mode re-confirmed via colour probe")
             else:
                 self._ir_mode = False
-                self._ir_gain_baseline = None
-                logger.info("Daylight confirmed via colour check → colour stream")
+                self._set_saturation(0.0)
+                logger.info("Daylight confirmed via colour probe → colour stream")
             return self._ir_mode
 
-        # ── No ColourGains: stateless fallback (thumbnail-only, no ISP change) ──
-        if not gains:
-            return self._is_infrared(thumb)
-
-        # ── Not in night mode: check for entry ───────────────────────────────
+        # ── Entry: not in night mode, thumbnail is colour ────────────────────
         if not self._ir_mode:
             if self._is_infrared(thumb):
                 self._ir_mode = True
-                self._ir_gain_baseline = gains
+                self._ir_last_probe = now
                 self._set_saturation(0.0)
-                logger.info(
-                    "Night vision detected (ColourGains=%s) → grayscale stream",
-                    tuple(round(g, 2) for g in gains),
-                )
+                logger.info("Night vision detected → grayscale stream")
             return self._ir_mode
 
-        # ── In night mode: check for exit ────────────────────────────────────
-        lux = self._latest_lux
-        gains_shifted = (
-            self._ir_gain_baseline is not None
-            and self._gains_deviate(gains, self._ir_gain_baseline, self._ir_exit_margin)
-        )
-        lux_daylight = lux is not None and lux > 50
-
-        if gains_shifted or lux_daylight:
-            # Restore colour for one snapshot to confirm with _is_infrared()
+        # ── In night mode: fire a probe when the timer expires ────────────────
+        if (now - self._ir_last_probe) >= self._ir_probe_interval:
             self._set_saturation(self._saturation)
             self._ir_pending_check = True
-            logger.info(
-                "Possible daylight (ColourGains=%s, Lux=%s) → colour check next frame",
-                tuple(round(g, 2) for g in gains),
-                f"{lux:.0f}" if lux is not None else "N/A",
-            )
+            logger.info("IR exit probe (periodic) → colour check next snapshot")
 
         return self._ir_mode
 
