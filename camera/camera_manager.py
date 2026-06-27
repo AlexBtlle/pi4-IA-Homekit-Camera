@@ -141,13 +141,14 @@ class CameraManager:
         self._picam2.pre_callback = self._lores_callback
 
         self._pipe_r, self._pipe_w = os.pipe()
-        # iperiod = 2 × fps → a keyframe every 2 s. Live view (-c:v copy) can
-        # only render once it receives a keyframe, so a shorter GOP cuts the
-        # time-to-first-frame in half. HKSV still works: the prebuffer fragments
-        # on each keyframe (movflags frag_keyframe), yielding clean 2 s fMP4
-        # fragments — the declared 4 s fragmentLength is only a hint.
+        # iperiod = fps → a keyframe every 1 s. Live view (-c:v copy) can only
+        # render once it receives a keyframe, so the shortest practical GOP cuts
+        # the time-to-first-frame. HKSV still works: the prebuffer fragments on
+        # each keyframe (movflags frag_keyframe), yielding 1 s fMP4 fragments —
+        # RETAIN_MS=6000 keeps 6 of them, the declared 4 s fragmentLength is a hint.
+        # Cost: ~10-15 % more bitrate (more keyframes) — negligible at 4 Mbps.
         self._encoder = H264Encoder(
-            bitrate=self._bitrate, iperiod=self._fps * 2, profile="high"
+            bitrate=self._bitrate, iperiod=self._fps, profile="high"
         )
 
         self._last_frame_time = time.monotonic()
