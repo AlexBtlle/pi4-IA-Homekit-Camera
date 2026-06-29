@@ -38,9 +38,10 @@ Deux services applicatifs + un serveur RTSP, reliés par mediamtx :
 - **mediamtx (service `mediamtx`)** : serveur RTSP local (`rtsp://localhost:8554/camera`).
 
 Le live et HKSV sont du **passthrough H264 matériel** — aucun ré-encodage.
-Le GOP (`iperiod` dans `camera_manager.py`) est à `fps × 2` (keyframe toutes
-les 2 s) : c'est un compromis latence live ↔ fragments HKSV. Ne pas augmenter
-sans raison (ça rallonge le délai d'apparition du live).
+Le GOP (`iperiod` dans `camera_manager.py`) est à `fps × 1` (keyframe toutes
+les 1 s) : compromis latence live ↔ fragments HKSV. Le live `-c:v copy` ne peut
+rien afficher avant de recevoir une keyframe, donc un GOP court réduit le délai
+d'apparition. Ne pas augmenter sans raison (ça rallonge le time-to-first-frame).
 
 ## Commandes
 
