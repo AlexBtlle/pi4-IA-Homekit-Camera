@@ -40,6 +40,10 @@ camera:
   lores_width: 320        # motion-detection stream width  (Pi Zero 2W: 256)
   lores_height: 240       # motion-detection stream height (Pi Zero 2W: 192)
   snapshot_interval: 2    # seconds between JPEG snapshots — Pi Zero 2W: 5 | Pi 3: 3 | Pi 4: 2
+  snapshot_path: /dev/shm/pi4cam-snapshot.jpg   # tmpfs (RAM) — keeps the 24/7 snapshot
+                          # rewrites off the SD card to avoid wear. Both the camera and
+                          # HomeKit services must agree on this path. Override only if
+                          # /dev/shm is unavailable (then point to another tmpfs).
   full_fov: true          # use the full sensor (full lens angle); false = native cropped 1080p
   sharpness: 1.0          # ISP sharpness 0.0–16.0 (1.0 = default; try 1.5–2.0 for crisper edges)
   contrast: 1.0           # ISP contrast  0.0–32.0 (1.0 = default)

@@ -8,7 +8,11 @@ import cv2
 
 logger = logging.getLogger(__name__)
 
-SNAPSHOT_PATH = "/tmp/pi4cam-snapshot.jpg"
+# tmpfs by default: the snapshot is rewritten every snapshot_interval seconds,
+# 24/7. Writing that to the SD card (/tmp is not tmpfs on Raspberry Pi OS) wears
+# it out over months. /dev/shm is RAM-backed → zero SD writes. Overridable via
+# config so the camera and HomeKit services always agree on the same path.
+DEFAULT_SNAPSHOT_PATH = "/dev/shm/pi4cam-snapshot.jpg"
 
 
 class CameraManager:
@@ -20,8 +24,9 @@ class CameraManager:
     start() onwards — no on-demand start/stop needed since mediamtx relays
     the stream and the HomeKit app reads from mediamtx.
 
-    Also writes a JPEG snapshot to SNAPSHOT_PATH every snapshot_interval
-    seconds using the main YUV420 frame directly — no H264 decode needed.
+    Also writes a JPEG snapshot to the configured snapshot_path every
+    snapshot_interval seconds using the main YUV420 frame directly — no H264
+    decode needed.
     """
 
     _instance = None
@@ -44,6 +49,7 @@ class CameraManager:
         self._lores_w = int(self._cfg.get("lores_width", 320))
         self._lores_h = int(self._cfg.get("lores_height", 240))
         self._snapshot_interval = float(self._cfg.get("snapshot_interval", 2))
+        self._snapshot_path = str(self._cfg.get("snapshot_path", DEFAULT_SNAPSHOT_PATH))
         self._full_fov = bool(self._cfg.get("full_fov", True))
         self._sharpness = float(self._cfg.get("sharpness", 1.0))
         self._contrast = float(self._cfg.get("contrast", 1.0))
@@ -365,9 +371,9 @@ class CameraManager:
                     thumb = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
                 ok, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 92])
                 if ok:
-                    tmp = SNAPSHOT_PATH + ".tmp"
+                    tmp = self._snapshot_path + ".tmp"
                     with open(tmp, "wb") as f:
                         f.write(buf.tobytes())
-                    os.replace(tmp, SNAPSHOT_PATH)
+                    os.replace(tmp, self._snapshot_path)
             except Exception:
                 logger.debug("Snapshot write failed", exc_info=True)
