@@ -45,7 +45,7 @@ function main(): void {
   accessory
     .getService(Service.AccessoryInformation)!
     .setCharacteristic(Characteristic.Manufacturer, "pi4-IA-Homekit-Camera")
-    .setCharacteristic(Characteristic.Model, "Raspberry Pi 4 Camera")
+    .setCharacteristic(Characteristic.Model, "Raspberry Pi Camera")
     .setCharacteristic(Characteristic.SerialNumber, pairing.username)
     .setCharacteristic(Characteristic.FirmwareRevision, "1.4.0");
 
