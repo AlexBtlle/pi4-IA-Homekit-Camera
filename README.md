@@ -86,6 +86,23 @@ journalctl -u pi4cam-homekit -b --no-pager | head -40
 
 That's it. Walk in front of the camera: a clip appears in the Home app timeline, starting ~4 seconds before you entered the frame.
 
+## Update
+
+To update an existing install to the latest version:
+
+```bash
+cd pi4-IA-Homekit-Camera
+git pull
+sudo bash install.sh
+```
+
+The installer rebuilds what changed and restarts the three services itself. Updates are safe by design:
+
+- **Your settings are preserved** — `/opt/pi4cam/config.yaml` is never overwritten; only keys introduced by the new version are added (the annotated defaults land in `/opt/pi4cam/config.yaml.dist` so you can diff).
+- **No re-pairing** — the pairing secrets survive updates, so the camera keeps its identity in the Home app and its HKSV history.
+
+After the update, open `http://<pi>.local:8080` and check that everything is green.
+
 ## How it works
 
 ```

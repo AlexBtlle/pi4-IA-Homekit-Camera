@@ -87,6 +87,23 @@ journalctl -u pi4cam-homekit -b --no-pager | head -40
 
 C'est tout. Passez devant la caméra : un clip apparaît dans l'historique de Maison, démarrant ~4 secondes avant votre entrée dans le champ.
 
+## Mise à jour
+
+Pour mettre à jour une installation existante vers la dernière version :
+
+```bash
+cd pi4-IA-Homekit-Camera
+git pull
+sudo bash install.sh
+```
+
+L'installateur reconstruit ce qui a changé et redémarre lui-même les trois services. La mise à jour est sûre par conception :
+
+- **Vos réglages sont préservés** — `/opt/pi4cam/config.yaml` n'est jamais écrasé ; seules les clés introduites par la nouvelle version sont ajoutées (les défauts annotés sont écrits dans `/opt/pi4cam/config.yaml.dist` pour comparaison).
+- **Pas de ré-appairage** — les secrets d'appairage survivent aux mises à jour : la caméra garde son identité dans l'app Maison et son historique HKSV.
+
+Après la mise à jour, ouvrez `http://<pi>.local:8080` et vérifiez que tout est au vert.
+
 ## Comment ça marche
 
 ```
