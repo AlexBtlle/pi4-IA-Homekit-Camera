@@ -170,7 +170,9 @@ function main(): void {
     pairing.pincode,
     config.cameraName,
     config.qrWebPort,
+    config.snapshotPath,
     motion,
+    recordingDelegate,
   ).start();
 
   motion.start();

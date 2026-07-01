@@ -20,12 +20,19 @@ export class RecordingDelegate implements CameraRecordingDelegate {
   private readonly prebuffer: Prebuffer;
   private configuration?: CameraRecordingConfiguration;
   private readonly streams = new Map<number, AbortController>();
+  private _active = false;
 
   constructor(rtspUrl: string) {
     this.prebuffer = new Prebuffer(rtspUrl);
   }
 
+  /** Whether HomeKit currently has recording armed (drives the status page). */
+  get recordingActive(): boolean {
+    return this._active;
+  }
+
   updateRecordingActive(active: boolean): void {
+    this._active = active;
     if (active) {
       this.prebuffer.start();
     } else {
