@@ -16,8 +16,8 @@ No Homebridge, no plugins, no cloud account, no admin dashboard to babysit. The 
 - **HomeKit Secure Video** — motion-triggered recordings stored in iCloud, viewable directly in the Home app's timeline. A rolling 4-second prebuffer means every clip starts before the motion event.
 - **Smart classification** — People / Animals / Vehicles / Packages detection is done by your Apple home hub (Apple TV / HomePod), exactly like commercial HKSV cameras. The Pi just reports motion, cheaply and reliably.
 - **Rich notifications** — motion alerts with a snapshot on your iPhone.
-- **Status dashboard** — a built-in web page (`http://<pi>.local:8080`) shows the pairing QR code and a live health view: service status, CPU temperature and motion stats.
-- **Lightweight** — ~330 MB RAM total, low CPU load, three small systemd services.
+- **Status dashboard** — a built-in web page (`http://<pi>.local:8080`) shows the pairing QR code and a live health view: overall status, temperature & throttle state, CPU load, RAM/swap, uptime, per-service status, snapshot freshness, HKSV state and last motion.
+- **Lightweight** — ~210 MB RAM with an active stream, low CPU load, three small systemd services.
 - **Private** — everything runs on your Pi. The RTSP stream is bound to localhost (never exposed on the network); the only cloud involved is your own iCloud (for HKSV recordings, end-to-end encrypted by Apple).
 
 ## Requirements
@@ -35,6 +35,23 @@ No Homebridge, no plugins, no cloud account, no admin dashboard to babysit. The 
 > A **heatsink** is strongly recommended: the SoC runs hot under continuous load.
 > Without one, expect 80–86 °C; with a full-board heatsink and a few ventilation holes
 > in the enclosure, temperatures drop to ~65 °C or below.
+
+## Flash the SD card
+
+Starting from a blank card, use **[Raspberry Pi Imager](https://www.raspberrypi.com/software/)**:
+
+1. **Choose OS** → *Raspberry Pi OS (other)* → **Raspberry Pi OS Lite (64-bit)**. Lite is enough — the camera runs headless, no desktop needed; 64-bit is required on the Zero 2 W.
+2. **Choose Storage** → your SD card.
+3. Click the **gear icon** (⚙ / `Ctrl+Shift+X`) to open the advanced settings, so the Pi boots straight onto your network with no screen or keyboard:
+   - **Hostname** (e.g. `cam-pi-zero`) — you'll reach the camera at `http://<hostname>.local`
+   - **Enable SSH** (password or public key)
+   - **Wi-Fi** SSID + password (and your country)
+   - **Username / password**, locale and keyboard layout
+4. **Write** the image, insert the card and power on the Pi.
+5. SSH in, then continue with **Install** below:
+   ```bash
+   ssh <username>@<hostname>.local
+   ```
 
 ## Install
 
@@ -72,9 +89,9 @@ That's it. Walk in front of the camera: a clip appears in the Home app timeline,
 ```
 ┌─ pi4cam.service (Python) ──────────────────────────────────┐
 │ picamera2                                                   │
-│  ├─ main 1920×1080, hardware H264 (keyframe every 4 s)      │
+│  ├─ main 1920×1080, hardware H264 (keyframe every 1 s)      │
 │  │    └→ ffmpeg -c copy → RTSP → mediamtx                   │
-│  ├─ main YUV420 → JPEG snapshot → /tmp every 2 s            │
+│  ├─ main YUV420 → JPEG snapshot → /dev/shm every 2 s        │
 │  └─ lores 320×240 → OpenCV MOG2 motion detection            │
 │       └→ POST localhost:8989/motion                         │
 │  (frame watchdog: restarts on libcamera frontend timeout)   │
@@ -85,10 +102,10 @@ That's it. Walk in front of the camera: a clip appears in the Home app timeline,
 ┌─ pi4cam-homekit.service (Node, HAP-NodeJS) ────────────────┐
 │ Standalone HomeKit camera accessory:                        │
 │  • Live   : RTSP → SRTP passthrough (-c:v copy)             │
-│  • Snapshot: serves the latest /tmp JPEG (instant)          │
+│  • Snapshot: serves the latest tmpfs JPEG (instant)         │
 │  • Motion : MotionSensor + local HTTP endpoint :8989        │
 │  • HKSV   : continuous fragmented-MP4 prebuffer (6 s ring)  │
-│             → recording delegate streams init + 4 s         │
+│             → recording delegate streams init + live        │
 │               fragments to the home hub on motion           │
 │  • Web    : QR + status dashboard on :8080                  │
 └─────────────────────────────────────────────────────────────┘
@@ -110,8 +127,9 @@ Everything lives in one file: [`config.yaml`](config.yaml). After editing, re-ru
 | `camera.sharpness` | 1.0 | ISP edge sharpening (0.0–16.0). Try 1.5–2.0 to compensate for lens softness. |
 | `camera.contrast` | 1.0 | ISP contrast (0.0–32.0). |
 | `camera.saturation` | 1.0 | ISP colour saturation (0.0–32.0). Try 1.2–1.5 for richer colours. |
-| `camera.ir_grayscale` | true | Auto-switch the stream **and** snapshot to grayscale at night, removing the pink/magenta IR cast. Zero CPU cost (done via ISP saturation). |
-| `camera.ir_exit_margin` | 0.25 | AWB-gain drift (fraction) that ends night mode and restores colour. Lower = exits sooner. |
+| `camera.ir_grayscale` | false | **(beta)** Auto-switch the stream **and** snapshot to grayscale at night, removing the pink/magenta IR cast (zero CPU, via ISP saturation). Off by default. |
+| `camera.ir_probe_interval` | 90 | Seconds between the colour probes used to detect the end of night mode when `ir_grayscale` is on. |
+| `camera.snapshot_path` | /dev/shm/pi4cam-snapshot.jpg | Where the JPEG snapshot is written — a tmpfs (RAM) path, to keep the 24/7 rewrites off the SD card. |
 | `homekit.camera_name` | Pi Camera | Name shown in the Home app |
 | `homekit.motion_timeout` | 10 | Seconds the motion sensor stays active |
 | `detection.min_motion_area` | 1500 | Motion sensitivity (smaller = more sensitive). Default is tuned for humans (~3 000 px at 320×240). Reduce to ~600 to also detect cats/dogs. |
@@ -121,6 +139,9 @@ The pairing secrets (PIN, setup ID, accessory MAC) are generated once by the ins
 
 ## Troubleshooting
 
+For a full symptom-by-symptom guide (thermal/throttling, memory & swap, stream
+latency, motion tuning, pairing backup…), see **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)**.
+
 ```bash
 journalctl -u pi4cam -f            # camera pipeline + motion detection
 journalctl -u pi4cam-homekit -f    # HomeKit app (pairing QR, streams, HKSV)
@@ -129,8 +150,8 @@ journalctl -u mediamtx -f          # RTSP server
 
 - **Camera not found when pairing** — both the iPhone and the Pi must be on the same network; check that `avahi-daemon` is running (mDNS).
 - **"Recording Options" missing in the Home app** — the accessory's capabilities are cached at pairing time. Remove the camera from the Home app and pair it again.
-- **Snapshot looks frozen** — the Python pipeline refreshes `/tmp/pi4cam-snapshot.jpg` every 2 s. If it stops updating, check `journalctl -u pi4cam` (the frame watchdog restarts the service automatically on a libcamera timeout).
-- **Check service health** — open `http://<pi>.local:8080`: the status dashboard shows whether each service is up, the CPU temperature and the motion count.
+- **Snapshot looks frozen** — the Python pipeline refreshes `/dev/shm/pi4cam-snapshot.jpg` every 2 s. If it stops updating, check `journalctl -u pi4cam` (the frame watchdog restarts the service automatically on a libcamera timeout).
+- **Check service health** — open `http://<pi>.local:8080`: the status dashboard shows each service's status, temperature & throttle state, memory/swap and the motion count.
 - **Check the raw stream** — the RTSP feed is bound to localhost for privacy, so probe it *from the Pi itself*: `ffprobe rtsp://127.0.0.1:8554/camera` should show `h264, 1920x1080`.
 
 ## Uninstall
