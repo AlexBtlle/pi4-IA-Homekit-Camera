@@ -122,6 +122,10 @@ Les secrets d'appairage (PIN, setup ID, MAC de l'accessoire) sont générés une
 
 ## Dépannage
 
+Pour un guide complet symptôme par symptôme (thermique/throttling, mémoire &
+swap, latence du stream, réglage de la détection, sauvegarde d'appairage…),
+voir **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** (en anglais).
+
 ```bash
 journalctl -u pi4cam -f            # pipeline caméra + détection de mouvement
 journalctl -u pi4cam-homekit -f    # app HomeKit (QR d'appairage, streams, HKSV)

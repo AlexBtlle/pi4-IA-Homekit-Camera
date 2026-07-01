@@ -121,6 +121,9 @@ The pairing secrets (PIN, setup ID, accessory MAC) are generated once by the ins
 
 ## Troubleshooting
 
+For a full symptom-by-symptom guide (thermal/throttling, memory & swap, stream
+latency, motion tuning, pairing backup…), see **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)**.
+
 ```bash
 journalctl -u pi4cam -f            # camera pipeline + motion detection
 journalctl -u pi4cam-homekit -f    # HomeKit app (pairing QR, streams, HKSV)
