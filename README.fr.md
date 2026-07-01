@@ -2,7 +2,7 @@
 
 **🇬🇧 [English version](README.md)**
 
-Transformez un Raspberry Pi 4 et un module caméra en **caméra HomeKit Secure Video native** comme une caméra qui sort de sa boîte.
+Transformez un Raspberry Pi et un module caméra en **caméra HomeKit Secure Video native** comme une caméra qui sort de sa boîte.
 
 ```
 Installer →  scanner le QR code  →  c'est fini.
@@ -14,7 +14,7 @@ Pas de Homebridge, pas de plugin, pas de compte cloud, pas d'interface d'adminis
 
 - **Flux en direct** — le H264 matériel du Pi est transmis tel quel à HomeKit (SRTP, zéro ré-encodage). 1080p30 fluide, CPU quasiment au repos.
 - **HomeKit Secure Video** — enregistrements déclenchés par le mouvement, stockés dans iCloud, lisibles directement dans l'historique de l'app Maison. Un prébuffer glissant de 4 secondes fait démarrer chaque clip avant l'événement.
-- **Classification intelligente** — la détection Personnes / Animaux / Véhicules / Colis est faite par votre concentrateur Apple (Apple TV / HomePod), exactement comme les caméras HKSV du commerce. Le Pi se contente de signaler le mouvement, de façon fiable et économe.
+- **Classification intelligente** — la détection Personnes / Animaux / Véhicules est faite par votre concentrateur Apple (Apple TV / HomePod), exactement comme les caméras HKSV du commerce. Le Pi se contente de signaler le mouvement, de façon fiable et économe.
 - **Notifications riches** — alertes de mouvement avec snapshot sur l'iPhone.
 - **Tableau de bord** — une page web intégrée (`http://<pi>.local:8080`) affiche le QR code d'appairage et un état en temps réel : statut global, température & throttling, charge CPU, RAM/swap, uptime, statut par service, fraîcheur du snapshot, état HKSV et dernier mouvement.
 - **Léger** — ~210 Mo de RAM avec un flux actif, faible charge CPU, trois petits services systemd.
@@ -31,11 +31,13 @@ Pas de Homebridge, pas de plugin, pas de compte cloud, pas d'interface d'adminis
 | **Pour les enregistrements** | Abonnement iCloud+ (quel que soit le palier — les clips HKSV ne comptent pas dans votre stockage) |
 
 > **Pi Zero 2 W** : entièrement supporté, HKSV compris. Mesuré sur une vraie unité :
-> ~194 Mo de RAM au repos, ~212 Mo avec un flux en direct actif (sur 512 Mo) —
-> pas de swap, aucun réglage nécessaire.
+> ~194 Mo de RAM au repos, ~212 Mo avec un flux en direct actif (sur 512 Mo). Le swap
+> zram est bel et bien utilisé (~180 Mo, davantage quand l'enregistrement HKSV est
+> armé) — c'est de la RAM compressée, pas la carte SD, et c'est absorbé sans réglage.
 > Un **dissipateur thermique** est fortement recommandé : le SoC chauffe sous charge continue.
-> Sans dissipateur, comptez 80–86 °C ; avec un dissipateur couvrant toute la carte et
-> quelques trous de ventilation dans le boîtier, la température descend à ~65 °C ou moins.
+> Même avec un dissipateur pleine carte, comptez ~75–80 °C et du throttling ponctuel en
+> boîtier fermé — ajoutez des trous de ventilation ou un petit ventilateur 5 V pour
+> rester confortablement en dessous.
 
 ## Flasher la carte SD
 
@@ -72,7 +74,7 @@ journalctl -u pi4cam-homekit -b --no-pager | head -40
 
 1. Ouvrez `http://<nom-du-pi>.local:8080` dans Safari sur votre iPhone ou Mac
    — la page affiche le QR code et le PIN de votre caméra, ainsi qu'un tableau
-   de bord en temps réel (état des services, température CPU, stats de mouvement)
+   de bord en temps réel (services, température, mémoire, mouvement)
 2. Ouvrez **Maison** → **+** → **Ajouter un accessoire** → scannez le QR code
    (ou *Plus d'options…* et saisissez le PIN)
 3. L'avertissement « non certifié » est normal pour tout accessoire DIY — touchez *Ajouter quand même*
@@ -116,7 +118,7 @@ La vidéo est encodée **une seule fois**, en matériel, sur la caméra. Tout ce
 
 ## Configuration
 
-Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Après modification, relancez `sudo bash install.sh` (ou copiez-le vers `/opt/pi4cam/config.yaml` et redémarrez les services).
+Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Sur un système installé, modifiez directement `/opt/pi4cam/config.yaml` puis redémarrez les services (`sudo systemctl restart pi4cam pi4cam-homekit`). Relancer `install.sh` n'écrase jamais vos valeurs — il n'ajoute que les clés introduites par les nouvelles versions (une référence annotée est conservée dans `/opt/pi4cam/config.yaml.dist`).
 
 | Clé | Défaut | Description |
 |---|---|---|
@@ -133,7 +135,7 @@ Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Après modificat
 | `camera.snapshot_path` | /dev/shm/pi4cam-snapshot.jpg | Emplacement d'écriture de la miniature JPEG — un chemin tmpfs (RAM), pour éviter l'usure de la carte SD due aux réécritures 24/7. |
 | `homekit.camera_name` | Pi Camera | Nom affiché dans l'app Maison |
 | `homekit.motion_timeout` | 10 | Durée (s) d'activation du capteur de mouvement |
-| `detection.min_motion_area` | 1500 | Sensibilité du mouvement (plus petit = plus sensible). Valeur par défaut calibrée pour les humains (~3 000 px à 320×240). Réduire à ~600 pour détecter aussi les chats/chiens. |
+| `detection.min_motion_area` | 1500 | Sensibilité du mouvement, en pixels absolus sur la frame basse résolution (plus petit = plus sensible). 1500 est calibré pour les humains à 320×240 ; réduire à ~300–600 pour détecter aussi les chats/chiens. À recalibrer si vous changez `lores_width`/`lores_height`. |
 | `detection.cooldown` | 30 | Délai (s) entre deux déclenchements |
 
 Les secrets d'appairage (PIN, setup ID, MAC de l'accessoire) sont générés une seule fois par l'installateur dans `/opt/pi4cam/homekit/pairing.json` et survivent aux réinstallations — mettre à jour le code ne nécessite jamais de ré-appairage.
