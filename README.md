@@ -2,7 +2,7 @@
 
 **🇫🇷 [Version française](README.fr.md)**
 
-Turn a Raspberry Pi 4 and a camera module into a **native HomeKit Secure Video camera** like a camera fresh out of the box.
+Turn a Raspberry Pi and a camera module into a **native HomeKit Secure Video camera** like a camera fresh out of the box.
 
 ```
 Install  →  scan the QR code  →  done.
@@ -14,7 +14,7 @@ No Homebridge, no plugins, no cloud account, no admin dashboard to babysit. The 
 
 - **Live streaming** — the Pi's hardware H264 encoder is passed straight through to HomeKit (SRTP, zero re-encoding). Fluid 1080p30 with near-idle CPU.
 - **HomeKit Secure Video** — motion-triggered recordings stored in iCloud, viewable directly in the Home app's timeline. A rolling 4-second prebuffer means every clip starts before the motion event.
-- **Smart classification** — People / Animals / Vehicles / Packages detection is done by your Apple home hub (Apple TV / HomePod), exactly like commercial HKSV cameras. The Pi just reports motion, cheaply and reliably.
+- **Smart classification** — People / Animals / Vehicles detection is done by your Apple home hub (Apple TV / HomePod), exactly like commercial HKSV cameras. The Pi just reports motion, cheaply and reliably.
 - **Rich notifications** — motion alerts with a snapshot on your iPhone.
 - **Status dashboard** — a built-in web page (`http://<pi>.local:8080`) shows the pairing QR code and a live health view: overall status, temperature & throttle state, CPU load, RAM/swap, uptime, per-service status, snapshot freshness, HKSV state and last motion.
 - **Lightweight** — ~210 MB RAM with an active stream, low CPU load, three small systemd services.
@@ -24,17 +24,19 @@ No Homebridge, no plugins, no cloud account, no admin dashboard to babysit. The 
 
 | | |
 |---|---|
-| **Board** | Raspberry Pi 4 (any RAM size) or Pi Zero 2 W |
+| **Board** | Raspberry Pi 4 (any RAM size), Pi Zero 2 W, Pi 3. |
 | **Camera** | Any CSI camera module supported by `libcamera` (Camera Module 2/3, HQ, NoIR…) |
-| **OS** | Raspberry Pi OS Bookworm **64-bit** (required on the Zero 2 W, recommended on the Pi 4) |
+| **OS** | Raspberry Pi OS **64-bit** |
 | **Apple side** | iPhone + a home hub (Apple TV 4K or HomePod) |
 | **For recordings** | iCloud+ subscription (any tier — HKSV recordings don't count against your storage) |
 
 > **Pi Zero 2 W**: fully supported, including HKSV. Measured on a real unit: ~194 MB RAM
-> idle, ~212 MB with an active live stream (out of 512 MB) — no swap, no tuning needed.
+> idle, ~212 MB with an active live stream (out of 512 MB). The zram swap does get used
+> (~180 MB, more while HKSV recording is armed) — that's compressed RAM, not the SD
+> card, and it is absorbed without any tuning.
 > A **heatsink** is strongly recommended: the SoC runs hot under continuous load.
-> Without one, expect 80–86 °C; with a full-board heatsink and a few ventilation holes
-> in the enclosure, temperatures drop to ~65 °C or below.
+> Even with a full-board heatsink, expect ~75–80 °C and occasional throttling in a
+> closed enclosure — add ventilation holes or a small 5 V fan to stay safely below.
 
 ## Flash the SD card
 
@@ -71,7 +73,7 @@ journalctl -u pi4cam-homekit -b --no-pager | head -40
 
 1. Open `http://<pi-hostname>.local:8080` in Safari on your iPhone or Mac
    — the page shows the QR code and PIN for your camera, plus a live status
-   dashboard (service health, CPU temperature, motion stats)
+   dashboard (services, temperature, memory, motion)
 2. Open **Home** → **+** → **Add Accessory** → scan the QR code
    (or tap *More options…* and enter the PIN)
 3. The "not certified" warning is normal for any DIY accessory — tap *Add Anyway*
@@ -83,6 +85,23 @@ journalctl -u pi4cam-homekit -b --no-pager | head -40
 3. Choose when to record (e.g. *When motion is detected*) and which activity (People, Animals, Vehicles…)
 
 That's it. Walk in front of the camera: a clip appears in the Home app timeline, starting ~4 seconds before you entered the frame.
+
+## Update
+
+To update an existing install to the latest version:
+
+```bash
+cd pi4-IA-Homekit-Camera
+git pull
+sudo bash install.sh
+```
+
+The installer rebuilds what changed and restarts the three services itself. Updates are safe by design:
+
+- **Your settings are preserved** — `/opt/pi4cam/config.yaml` is never overwritten; only keys introduced by the new version are added (the annotated defaults land in `/opt/pi4cam/config.yaml.dist` so you can diff).
+- **No re-pairing** — the pairing secrets survive updates, so the camera keeps its identity in the Home app and its HKSV history.
+
+After the update, open `http://<pi>.local:8080` and check that everything is green.
 
 ## How it works
 
@@ -115,7 +134,7 @@ The video is encoded **once**, in hardware, on the camera. Everything downstream
 
 ## Configuration
 
-Everything lives in one file: [`config.yaml`](config.yaml). After editing, re-run `sudo bash install.sh` (or copy it to `/opt/pi4cam/config.yaml` and restart the services).
+Everything lives in one file: [`config.yaml`](config.yaml). On an installed system, edit `/opt/pi4cam/config.yaml` directly, then restart the services (`sudo systemctl restart pi4cam pi4cam-homekit`). Re-running `install.sh` never overwrites your values — it only injects keys added by newer versions (an annotated reference is kept at `/opt/pi4cam/config.yaml.dist`).
 
 | Key | Default | Description |
 |---|---|---|
@@ -132,7 +151,7 @@ Everything lives in one file: [`config.yaml`](config.yaml). After editing, re-ru
 | `camera.snapshot_path` | /dev/shm/pi4cam-snapshot.jpg | Where the JPEG snapshot is written — a tmpfs (RAM) path, to keep the 24/7 rewrites off the SD card. |
 | `homekit.camera_name` | Pi Camera | Name shown in the Home app |
 | `homekit.motion_timeout` | 10 | Seconds the motion sensor stays active |
-| `detection.min_motion_area` | 1500 | Motion sensitivity (smaller = more sensitive). Default is tuned for humans (~3 000 px at 320×240). Reduce to ~600 to also detect cats/dogs. |
+| `detection.min_motion_area` | 1500 | Motion sensitivity, in absolute pixels on the low-res detection frame (smaller = more sensitive). 1500 is tuned for humans at 320×240; reduce to ~300–600 to also catch cats/dogs. Recalibrate if you change `lores_width`/`lores_height`. |
 | `detection.cooldown` | 30 | Seconds between two motion triggers |
 
 The pairing secrets (PIN, setup ID, accessory MAC) are generated once by the installer into `/opt/pi4cam/homekit/pairing.json` and survive re-installs — updating the code never requires re-pairing.

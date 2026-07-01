@@ -14,7 +14,6 @@ export interface AppConfig {
   width: number;
   height: number;
   fps: number;
-  maxBitrate: number; // kbit/s
   qrWebPort: number;
   snapshotPath: string;
 }
@@ -80,8 +79,6 @@ export function loadConfig(): AppConfig {
     width: Number(camera.width ?? 1920),
     height: Number(camera.height ?? 1080),
     fps: Number(camera.fps ?? 30),
-    // config.yaml stores bitrate in bit/s; HomeKit wants kbit/s.
-    maxBitrate: Math.round(Number(camera.bitrate ?? 4_000_000) / 1000),
     qrWebPort: Number(homekit.qr_web_port ?? 8080),
     snapshotPath: String(camera.snapshot_path ?? "/dev/shm/pi4cam-snapshot.jpg"),
   };
