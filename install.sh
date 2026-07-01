@@ -155,28 +155,10 @@ if [[ ! -f "${INSTALL_DIR}/config.yaml" ]]; then
     cp "${SRC_DIR}/config.yaml" "${INSTALL_DIR}/"
     info "config.yaml installed."
 else
-    # Preserve user values; inject any new keys introduced by this version
-    python3 - "${INSTALL_DIR}/config.yaml" "${SRC_DIR}/config.yaml" <<'PYEOF'
-import yaml, sys
-
-def merge_new_keys(base, new):
-    result = dict(base)
-    for k, v in new.items():
-        if k not in result:
-            result[k] = v
-        elif isinstance(result[k], dict) and isinstance(v, dict):
-            result[k] = merge_new_keys(result[k], v)
-    return result
-
-with open(sys.argv[1]) as f:
-    existing = yaml.safe_load(f) or {}
-with open(sys.argv[2]) as f:
-    defaults = yaml.safe_load(f) or {}
-
-merged = merge_new_keys(existing, defaults)
-with open(sys.argv[1], 'w') as f:
-    yaml.dump(merged, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-PYEOF
+    # Preserve user values; inject any new keys introduced by this version.
+    # Logic lives in scripts/config_merge.py (single source of truth, tested).
+    python3 "${SRC_DIR}/scripts/config_merge.py" \
+        "${INSTALL_DIR}/config.yaml" "${SRC_DIR}/config.yaml"
     info "config.yaml updated: new keys added, your customisations preserved."
     info "Annotated reference: ${INSTALL_DIR}/config.yaml.dist"
 fi

@@ -47,7 +47,7 @@ function main(): void {
     .setCharacteristic(Characteristic.Manufacturer, "pi4-IA-Homekit-Camera")
     .setCharacteristic(Characteristic.Model, "Raspberry Pi 4 Camera")
     .setCharacteristic(Characteristic.SerialNumber, pairing.username)
-    .setCharacteristic(Characteristic.FirmwareRevision, "2.0.0");
+    .setCharacteristic(Characteristic.FirmwareRevision, "1.3.0");
 
   const snapshots = new SnapshotProvider(config.snapshotPath);
   const streamingDelegate = new StreamingDelegate(config.rtspUrl, snapshots);
@@ -170,7 +170,9 @@ function main(): void {
     pairing.pincode,
     config.cameraName,
     config.qrWebPort,
+    config.snapshotPath,
     motion,
+    recordingDelegate,
   ).start();
 
   motion.start();

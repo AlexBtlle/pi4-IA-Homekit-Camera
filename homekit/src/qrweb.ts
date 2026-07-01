@@ -1,9 +1,13 @@
+import { execFile } from "child_process";
 import { promises as fs } from "fs";
 import http from "http";
 import net from "net";
 import os from "os";
 import qrcode from "qrcode-terminal";
 import type { MotionService } from "./motion";
+import type { RecordingDelegate } from "./recording";
+
+type Health = "ok" | "warn" | "crit" | "muted";
 
 export class QrWebServer {
   private server?: http.Server;
@@ -14,7 +18,9 @@ export class QrWebServer {
     private readonly pin: string,
     private readonly cameraName: string,
     private readonly port: number,
+    private readonly snapshotPath: string,
     private readonly motionService?: MotionService,
+    private readonly recording?: RecordingDelegate,
   ) {}
 
   start(): this {
@@ -50,154 +56,283 @@ export class QrWebServer {
   }
 
   private async buildPage(): Promise<string> {
-    const pin = this.pin.replace(/-/g, "‑");
+    const pin = esc(this.pin.replace(/-/g, "‑"));
+    const hostname = esc(os.hostname());
+    const name = esc(this.cameraName);
 
-    const [mediamtxOk, snapshotFresh, cpuTemp] = await Promise.all([
-      this._mediamtxOk(),
-      this._snapshotFresh(),
-      this._cpuTemp(),
+    // All probes run on request only — no background polling on the Zero 2 W.
+    const [mediamtxOk, snap, tempC, throttle, mem, pi4camActive] =
+      await Promise.all([
+        this._mediamtxOk(),
+        this._snapshot(),
+        this._cpuTempC(),
+        this._throttle(),
+        this._mem(),
+        this._serviceActive("pi4cam"),
+      ]);
+
+    const load1 = os.loadavg()[0];
+    const cores = os.cpus().length;
+    const uptime = esc(formatUptime(process.uptime()));
+    const hksv = this.recording?.recordingActive ?? null;
+    const motion = this.motionService?.getStats();
+    const motionCount = motion?.triggerCount ?? 0;
+    const motionAgo = motion?.lastTrigger ? formatAgo(motion.lastTrigger) : null;
+
+    // ---- derive per-item health --------------------------------------
+    const tempLevel: Health =
+      tempC === null ? "muted" : tempC >= 80 ? "crit" : tempC >= 70 ? "warn" : "ok";
+    const swapLevel: Health =
+      !mem || mem.swapTotal === 0
+        ? "ok"
+        : mem.swapUsed / mem.swapTotal >= 0.9
+          ? "crit"
+          : mem.swapUsed / mem.swapTotal >= 0.75
+            ? "warn"
+            : "ok";
+    const mediamtxLevel: Health = mediamtxOk ? "ok" : "crit";
+    const pi4camLevel: Health =
+      pi4camActive === null ? "muted" : pi4camActive ? "ok" : "crit";
+    const snapLevel: Health = snap.fresh ? "ok" : "crit";
+
+    // Overall pill: worst of the meaningful signals (swap stays informational).
+    const worst = worstOf([
+      tempLevel,
+      throttle.level,
+      mediamtxLevel,
+      pi4camLevel,
+      snapLevel,
     ]);
+    const pill =
+      worst === "crit"
+        ? { cls: "crit", dot: "red", text: "Attention needed" }
+        : worst === "warn"
+          ? { cls: "warn", dot: "amber", text: "Warning — check below" }
+          : { cls: "ok", dot: "green", text: "All systems normal" };
 
-    const uptime  = formatUptime(process.uptime());
-    const motionStats = this.motionService?.getStats();
-    const hostname = os.hostname();
-
-    const dot = (ok: boolean) =>
-      `<span class="dot ${ok ? "green" : "red"}"></span>`;
-
-    const motionCount = motionStats?.triggerCount ?? 0;
-    const motionAgo   = motionStats?.lastTrigger
-      ? formatAgo(motionStats.lastTrigger)
-      : null;
+    const dot = (h: Health) => `<span class="dot ${dotClass(h)}"></span>`;
+    const tempStr = tempC === null ? "n/a" : `${tempC.toFixed(1)}<small>°C</small>`;
+    const ram = mem
+      ? `${mem.ramUsed}<small>/ ${mem.ramTotal} MB</small>`
+      : "n/a";
+    const swap = mem
+      ? mem.swapTotal === 0
+        ? "0<small>MB</small>"
+        : `${mem.swapUsed}<small>MB</small>`
+      : "n/a";
+    const snapVal = snap.fresh
+      ? `fresh${snap.ageSec !== null ? ` <small>· ${snap.ageSec}s ago</small>` : ""}`
+      : "stale";
+    const hksvVal =
+      hksv === null
+        ? `${dot("muted")}n/a`
+        : hksv
+          ? `${dot("ok")}armed`
+          : `${dot("muted")}idle`;
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>${esc(this.cameraName)} — HomeKit</title>
+  <title>${name} — HomeKit</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --line: #ebebeb; --line-strong: #e5e5e5;
+      --ink: #1a1a1a; --muted: #888; --faint: #aaa; --tile: #fafafa;
+      --green: #22c55e; --amber: #f59e0b; --red: #ef4444;
+    }
     body {
-      background: #fff;
-      color: #1a1a1a;
+      background: #fff; color: var(--ink);
       font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
-      min-height: 100dvh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 2rem 1.5rem 4rem;
-      gap: 2rem;
+      min-height: 100dvh; display: flex; flex-direction: column; align-items: center;
+      padding: 2rem 1.5rem 3rem; gap: 1.75rem;
     }
-    .header { text-align: center; }
-    .header h1 { font-size: .9rem; font-weight: 500; color: #1a1a1a; letter-spacing: -.01em; }
+    .header h1 { font-size: .9rem; font-weight: 500; letter-spacing: -.01em; text-align: center; }
     .header h1 span { color: #bbb; font-weight: 400; }
-    .pairing {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 1.75rem;
-      width: 100%;
-      max-width: 320px;
-    }
+    .wrap { width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 1.75rem; }
+    .pairing { display: flex; flex-direction: column; align-items: center; gap: 1.5rem; }
     .qr-wrap {
-      background: #fff;
-      border: 1px solid #e5e5e5;
-      border-radius: .5rem;
-      padding: .875rem;
-      display: inline-flex;
+      background: #fff; border: 1px solid var(--line-strong);
+      border-radius: .625rem; padding: .875rem; display: inline-flex;
     }
-    /* scaleX(0.83): corrects monospace char aspect ratio for block QR art.
-       Courier New chars are ~0.6× as wide as tall; each text line = 2 QR rows,
-       so the ideal ratio is 0.5. Factor = 0.5/0.601 ≈ 0.83. */
+    /* scaleX(0.83): corrects monospace char aspect ratio for block QR art. */
     .qr-wrap pre {
-      font-family: "Courier New", monospace;
-      font-size: 13px;
-      line-height: 1;
-      letter-spacing: 0;
-      color: #000;
-      user-select: none;
-      transform: scaleX(0.83);
-      transform-origin: center;
-      display: block;
+      font-family: "Courier New", monospace; font-size: 13px; line-height: 1;
+      letter-spacing: 0; color: #000; user-select: none;
+      transform: scaleX(0.83); transform-origin: center; display: block;
     }
     .pin-block { text-align: center; }
     .pin-block .label {
-      font-size: .7rem; color: #aaa;
+      font-size: .7rem; color: var(--faint);
       letter-spacing: .08em; text-transform: uppercase; margin-bottom: .5rem;
     }
     .pin-block .pin {
       font-size: 2rem; font-weight: 600; letter-spacing: .18em;
-      color: #1a1a1a; font-variant-numeric: tabular-nums;
+      font-variant-numeric: tabular-nums;
     }
-    .pin-block .hint { margin-top: .65rem; font-size: .75rem; color: #aaa; line-height: 1.6; }
-    .status {
-      width: 100%; max-width: 320px;
-      border-top: 1px solid #ebebeb;
-      padding-top: 2rem;
+    .pin-block .hint { margin-top: .6rem; font-size: .75rem; color: var(--faint); line-height: 1.6; }
+    .health {
+      display: flex; align-items: center; justify-content: center; gap: .5rem;
+      font-size: .8rem; font-weight: 500; padding: .55rem; border-radius: .5rem;
+      background: var(--tile); border: 1px solid var(--line);
     }
-    .status-row {
+    .health.ok { color: #15803d; }
+    .health.warn { color: #b45309; }
+    .health.crit { color: #b91c1c; }
+    .section-label {
+      font-size: .66rem; color: var(--faint); letter-spacing: .09em;
+      text-transform: uppercase; margin: 0 0 .55rem .1rem;
+    }
+    .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+    .tile {
+      background: var(--tile); border: 1px solid var(--line);
+      border-radius: .55rem; padding: .7rem .8rem;
+    }
+    .tile .k { font-size: .68rem; color: var(--muted); margin-bottom: .3rem; }
+    .tile .v {
+      font-size: 1.05rem; font-weight: 600; font-variant-numeric: tabular-nums;
+      display: flex; align-items: center; gap: .4rem;
+    }
+    .tile .v small { font-size: .72rem; font-weight: 400; color: var(--faint); }
+    .rows { border: 1px solid var(--line); border-radius: .55rem; overflow: hidden; }
+    .row {
       display: flex; justify-content: space-between; align-items: center;
-      padding: .6rem 0; border-bottom: 1px solid #ebebeb; font-size: .82rem;
+      padding: .62rem .8rem; font-size: .82rem; border-bottom: 1px solid var(--line);
     }
-    .status-row:last-child { border-bottom: none; }
-    .status-row .name { color: #888; }
-    .status-row .val  { color: #1a1a1a; display: flex; align-items: center; gap: .45rem; }
-    .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-    .dot.green  { background: #22c55e; }
-    .dot.red    { background: #ef4444; }
-    .dot.yellow { background: #f59e0b; }
-    .footer { padding-top: 1.5rem; font-size: .72rem; color: #ccc; text-align: center; }
+    .row:last-child { border-bottom: none; }
+    .row .name { color: var(--muted); }
+    .row .val { color: var(--ink); display: flex; align-items: center; gap: .45rem; font-variant-numeric: tabular-nums; }
+    .row .val small { color: var(--faint); }
+    .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .dot.green { background: var(--green); }
+    .dot.amber { background: var(--amber); }
+    .dot.red { background: var(--red); }
+    .dot.gray { background: #ccc; }
+    .footer { font-size: .72rem; color: #ccc; text-align: center; padding-top: .5rem; }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>${esc(this.cameraName)} <span>· ${esc(hostname)}.local</span></h1>
-  </div>
+  <div class="header"><h1>${name} <span>· ${hostname}.local</span></h1></div>
 
-  <div class="pairing">
-    <div class="qr-wrap">${this._qrBlock}</div>
-    <div class="pin-block">
-      <div class="label">Setup code</div>
-      <div class="pin">${esc(pin)}</div>
-      <div class="hint">Home → + → Add Accessory → scan or enter code</div>
+  <div class="wrap">
+    <div class="pairing">
+      <div class="qr-wrap">${this._qrBlock}</div>
+      <div class="pin-block">
+        <div class="label">Setup code</div>
+        <div class="pin">${pin}</div>
+        <div class="hint">Home → + → Add Accessory → scan or enter code</div>
+      </div>
     </div>
-  </div>
 
-  <div class="status">
-    <div class="status-row">
-      <span class="name">pi4cam-homekit</span>
-      <span class="val"><span class="dot green"></span>uptime ${esc(uptime)}</span>
+    <div class="health ${pill.cls}"><span class="dot ${pill.dot}"></span>${pill.text}</div>
+
+    <div>
+      <div class="section-label">System</div>
+      <div class="tiles">
+        <div class="tile"><div class="k">Temperature</div><div class="v">${dot(tempLevel)}${tempStr}</div></div>
+        <div class="tile"><div class="k">Throttle</div><div class="v">${dot(throttle.level)}${esc(throttle.label)}</div></div>
+        <div class="tile"><div class="k">CPU load</div><div class="v">${load1.toFixed(2)}<small>/ ${cores} cores</small></div></div>
+        <div class="tile"><div class="k">Uptime</div><div class="v">${uptime}</div></div>
+        <div class="tile"><div class="k">RAM</div><div class="v">${ram}</div></div>
+        <div class="tile"><div class="k">Swap</div><div class="v">${dot(swapLevel)}${swap}</div></div>
+      </div>
     </div>
-    <div class="status-row">
-      <span class="name">pi4cam</span>
-      <span class="val"><span class="dot ${snapshotFresh ? "green" : "red"}"></span>${snapshotFresh ? "snapshot fresh" : "snapshot stale"}</span>
+
+    <div>
+      <div class="section-label">Services</div>
+      <div class="rows">
+        <div class="row"><span class="name">pi4cam-homekit</span><span class="val">${dot("ok")}running</span></div>
+        <div class="row"><span class="name">pi4cam</span><span class="val">${dot(pi4camLevel)}${pi4camActive === null ? "n/a" : pi4camActive ? "running" : "stopped"}</span></div>
+        <div class="row"><span class="name">mediamtx</span><span class="val">${dot(mediamtxLevel)}${mediamtxOk ? "RTSP :8554" : "down"}</span></div>
+      </div>
     </div>
-    <div class="status-row">
-      <span class="name">mediamtx</span>
-      <span class="val"><span class="dot ${mediamtxOk ? "green" : "red"}"></span>${mediamtxOk ? "RTSP :8554" : "down"}</span>
+
+    <div>
+      <div class="section-label">Camera &amp; detection</div>
+      <div class="rows">
+        <div class="row"><span class="name">Snapshot</span><span class="val">${dot(snapLevel)}${snapVal}</span></div>
+        <div class="row"><span class="name">HKSV recording</span><span class="val">${hksvVal}</span></div>
+        <div class="row"><span class="name">Last motion</span><span class="val">${motionCount} event${motionCount !== 1 ? "s" : ""}${motionAgo ? ` <small>· ${esc(motionAgo)}</small>` : ""}</span></div>
+      </div>
     </div>
-    <div class="status-row">
-      <span class="name">CPU</span>
-      <span class="val"><span class="dot yellow"></span>${esc(cpuTemp)}</span>
-    </div>
-    <div class="status-row">
-      <span class="name">Motion</span>
-      <span class="val">${motionCount} event${motionCount !== 1 ? "s" : ""}${motionAgo ? ` — last ${esc(motionAgo)}` : ""}</span>
-    </div>
+
     <div class="footer">pi4-IA-Homekit-Camera</div>
   </div>
 </body>
 </html>`;
   }
 
-  private async _cpuTemp(): Promise<string> {
+  // ------------------------------------------------------------------
+  // Probes (all best-effort; failures degrade to "n/a")
+  // ------------------------------------------------------------------
+
+  private async _cpuTempC(): Promise<number | null> {
     try {
       const raw = await fs.readFile("/sys/class/thermal/thermal_zone0/temp", "utf8");
-      return (parseInt(raw, 10) / 1000).toFixed(1) + "°C";
+      return parseInt(raw, 10) / 1000;
     } catch {
-      return "N/A";
+      return null;
     }
+  }
+
+  private _throttle(): Promise<{ label: string; level: Health }> {
+    return new Promise((resolve) => {
+      execFile("vcgencmd", ["get_throttled"], { timeout: 800 }, (err, stdout) => {
+        const m = /0x[0-9a-fA-F]+/.exec(String(stdout));
+        if (err || !m) {
+          resolve({ label: "n/a", level: "muted" });
+          return;
+        }
+        const v = parseInt(m[0], 16);
+        if (v === 0) {
+          resolve({ label: "OK", level: "ok" });
+        } else if (v & 0x1 || v & 0x4 || v & 0x8) {
+          // currently under-voltage / throttled / soft-temp-limited
+          resolve({ label: v & 0x1 ? "under-voltage" : "throttling", level: "crit" });
+        } else if (v & 0x10000 || v & 0x40000 || v & 0x20000 || v & 0x80000) {
+          // occurred since boot (sticky)
+          resolve({ label: v & 0x10000 ? "under-voltage (past)" : "throttled (past)", level: "warn" });
+        } else {
+          resolve({ label: "OK", level: "ok" });
+        }
+      });
+    });
+  }
+
+  private async _mem(): Promise<
+    { ramUsed: number; ramTotal: number; swapUsed: number; swapTotal: number } | null
+  > {
+    try {
+      const raw = await fs.readFile("/proc/meminfo", "utf8");
+      const kb = (key: string): number => {
+        const m = new RegExp(`^${key}:\\s+(\\d+)`, "m").exec(raw);
+        return m ? parseInt(m[1], 10) : 0;
+      };
+      const toMB = (x: number) => Math.round(x / 1024);
+      const memTotal = kb("MemTotal");
+      const swapTotal = kb("SwapTotal");
+      return {
+        ramUsed: toMB(memTotal - kb("MemAvailable")),
+        ramTotal: toMB(memTotal),
+        swapUsed: toMB(swapTotal - kb("SwapFree")),
+        swapTotal: toMB(swapTotal),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private _serviceActive(name: string): Promise<boolean | null> {
+    return new Promise((resolve) => {
+      execFile("systemctl", ["is-active", name], { timeout: 800 }, (_err, stdout) => {
+        const s = String(stdout).trim();
+        if (s === "active") resolve(true);
+        else if (s === "") resolve(null); // systemctl unavailable (e.g. dev machine)
+        else resolve(false);
+      });
+    });
   }
 
   private _mediamtxOk(): Promise<boolean> {
@@ -210,18 +345,29 @@ export class QrWebServer {
     });
   }
 
-  private async _snapshotFresh(): Promise<boolean> {
+  private async _snapshot(): Promise<{ fresh: boolean; ageSec: number | null }> {
     try {
-      const stat = await fs.stat("/tmp/pi4cam-snapshot.jpg");
-      return Date.now() - stat.mtimeMs < 15_000;
+      const stat = await fs.stat(this.snapshotPath);
+      const ageMs = Date.now() - stat.mtimeMs;
+      return { fresh: ageMs < 15_000, ageSec: Math.round(ageMs / 1000) };
     } catch {
-      return false;
+      return { fresh: false, ageSec: null };
     }
   }
 }
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function dotClass(h: Health): string {
+  return h === "ok" ? "green" : h === "warn" ? "amber" : h === "crit" ? "red" : "gray";
+}
+
+function worstOf(levels: Health[]): Health {
+  if (levels.includes("crit")) return "crit";
+  if (levels.includes("warn")) return "warn";
+  return "ok";
 }
 
 function localIP(): string {
@@ -236,8 +382,10 @@ function localIP(): string {
 }
 
 function formatUptime(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
   const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
   if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m`;
   return `${Math.floor(seconds)}s`;
