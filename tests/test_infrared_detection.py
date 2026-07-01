@@ -1,52 +1,122 @@
-"""Tests for CameraManager._is_infrared() — no hardware required."""
-from unittest.mock import MagicMock
+"""Tests for the chroma-based IR night-vision detector (v2) — no hardware.
 
+Covers the pure frame classifier (_is_ir_frame) and the hysteresis state
+machine (_apply_ir_vote) that the v1 probe design never had tests for.
+"""
 from camera.camera_manager import CameraManager
 
-
-def fake_bgr(b, g, r):
-    """Return a mock ndarray whose .mean(axis=...) returns [B, G, R]."""
-    img = MagicMock()
-    img.mean.return_value = [b, g, r]
-    return img
+ENTRY = CameraManager.IR_ENTRY_FRAMES
+EXIT = CameraManager.IR_EXIT_FRAMES
 
 
-# --- should detect as infrared ---
-
-def test_strong_pink_cast():
-    assert CameraManager._is_infrared(fake_bgr(80, 130, 180))
-
-
-def test_typical_ir_image():
-    # R=170 B=100 → diff 70, R>60
-    assert CameraManager._is_infrared(fake_bgr(100, 140, 170))
+def make_manager() -> CameraManager:
+    # Direct construction on purpose (bypasses the singleton); __init__ never
+    # touches picamera2, so this works with the conftest hardware mocks.
+    return CameraManager({"camera": {"ir_grayscale": True}})
 
 
-# --- should NOT detect as infrared ---
+# ----------------------------------------------------------------------
+# _is_ir_frame — one frame's chroma statistics
+# ----------------------------------------------------------------------
 
-def test_daylight_neutral():
-    assert not CameraManager._is_infrared(fake_bgr(120, 120, 120))
-
-
-def test_daylight_warm():
-    assert not CameraManager._is_infrared(fake_bgr(100, 110, 120))
-
-
-def test_too_dark():
-    # R - B > 25 but R < 60 → image trop sombre, pas de détection
-    assert not CameraManager._is_infrared(fake_bgr(10, 20, 40))
+def test_typical_ir_night():
+    # uniform chroma, warm residual cast → IR
+    assert CameraManager._is_ir_frame(u_mean=120, u_std=2.0, v_mean=140, v_std=3.0)
 
 
-def test_blue_scene():
-    assert not CameraManager._is_infrared(fake_bgr(180, 130, 80))
+def test_ir_with_awb_partially_cancelling_cast():
+    # AWB pulled the cast down but couldn't kill it; still uniform → IR
+    assert CameraManager._is_ir_frame(u_mean=126, u_std=1.5, v_mean=133, v_std=2.0)
 
 
-def test_exact_threshold_boundary():
-    # R - B == 25 → pas strictement supérieur
-    assert not CameraManager._is_infrared(fake_bgr(100, 112, 125))
+def test_colourful_daylight():
+    # diverse hues → high chroma std → not IR
+    assert not CameraManager._is_ir_frame(u_mean=125, u_std=18.0, v_mean=135, v_std=20.0)
 
 
-def test_just_above_threshold():
-    assert CameraManager._is_infrared(fake_bgr(100, 113, 126))
+def test_grey_overcast_scene_without_cast():
+    # uniform but chroma-neutral (fog, concrete): no warm cast → not IR
+    assert not CameraManager._is_ir_frame(u_mean=128, u_std=1.0, v_mean=128.5, v_std=1.0)
 
 
+def test_cool_cast_is_not_ir():
+    # uniform but V *below* neutral (blueish) → not the IR signature
+    assert not CameraManager._is_ir_frame(u_mean=132, u_std=1.0, v_mean=120, v_std=1.0)
+
+
+def test_headlights_break_uniformity():
+    # night scene lit by a warm headlight beam: cast present but V no longer
+    # uniform → single frames read as not-IR (hysteresis absorbs them)
+    assert not CameraManager._is_ir_frame(u_mean=122, u_std=3.0, v_mean=140, v_std=15.0)
+
+
+def test_cast_threshold_boundary():
+    at = 128.0 + CameraManager.IR_CAST_MIN
+    assert not CameraManager._is_ir_frame(120, 1.0, at, 1.0)        # not strictly above
+    assert CameraManager._is_ir_frame(120, 1.0, at + 0.1, 1.0)      # just above
+
+
+def test_std_threshold_boundary():
+    at = CameraManager.IR_CHROMA_STD_MAX
+    assert not CameraManager._is_ir_frame(120, at, 140, 1.0)        # u_std not below max
+    assert CameraManager._is_ir_frame(120, at - 0.1, 140, 1.0)
+
+
+# ----------------------------------------------------------------------
+# _apply_ir_vote — hysteresis state machine
+# ----------------------------------------------------------------------
+
+def test_entry_requires_consecutive_ir_frames():
+    cam = make_manager()
+    for _ in range(ENTRY - 1):
+        cam._apply_ir_vote(True)
+    assert cam._ir_mode is False
+    cam._apply_ir_vote(True)
+    assert cam._ir_mode is True
+
+
+def test_one_daylight_frame_resets_the_entry_streak():
+    cam = make_manager()
+    for _ in range(ENTRY - 1):
+        cam._apply_ir_vote(True)
+    cam._apply_ir_vote(False)  # flicker: streak resets
+    for _ in range(ENTRY - 1):
+        cam._apply_ir_vote(True)
+    assert cam._ir_mode is False  # needs the full run again
+    cam._apply_ir_vote(True)
+    assert cam._ir_mode is True
+
+
+def test_exit_is_slower_than_entry():
+    assert EXIT > ENTRY
+
+
+def test_exit_requires_consecutive_daylight_frames():
+    cam = make_manager()
+    cam._ir_mode = True
+    for _ in range(EXIT - 1):
+        cam._apply_ir_vote(False)
+    assert cam._ir_mode is True
+    cam._apply_ir_vote(False)
+    assert cam._ir_mode is False
+
+
+def test_headlight_flicker_does_not_exit_night_mode():
+    cam = make_manager()
+    cam._ir_mode = True
+    # repeated bursts of non-IR votes, always shorter than the exit window,
+    # each interrupted by an IR frame (headlights passing)
+    for _ in range(10):
+        for _ in range(EXIT - 1):
+            cam._apply_ir_vote(False)
+        cam._apply_ir_vote(True)
+    assert cam._ir_mode is True
+
+
+def test_matching_votes_keep_streak_reset():
+    cam = make_manager()
+    cam._apply_ir_vote(False)  # matches day mode
+    assert cam._ir_streak == 0
+    cam._ir_mode = True
+    cam._apply_ir_vote(True)   # matches night mode
+    assert cam._ir_streak == 0

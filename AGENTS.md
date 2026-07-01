@@ -72,10 +72,12 @@ journalctl -u pi4cam-homekit -f    # logs HomeKit/stream
 ## Pièges connus
 
 - **Détection IR de nuit (`ir_grayscale`)** : feature **bêta**, désactivée par
-  défaut. Avec Saturation=0 l'image est grise → `_is_infrared()` renvoie toujours
-  False, donc on ne peut pas détecter la sortie depuis l'état gris. La sortie se
-  fait par sonde couleur périodique (`ir_probe_interval`). Les gains AWB (850 nm)
-  sont peu fiables comme signal — ne pas y revenir.
+  défaut. Design v2 (#31) : détection sur les stats chroma U/V de la lores
+  (uniformité = IR) avec hystérésis, effet par neutralisation U/V du frame main
+  dans le `pre_callback` via `MappedArray`. **Ne jamais toucher à la Saturation
+  ISP** (la v1 le faisait : ça détruit la donnée nécessaire à détecter la sortie
+  → deadlock). Les gains AWB et le Lux (850 nm) sont inutilisables comme signal
+  — ne pas y revenir.
 - **`min_motion_area`** : pixels absolus sur la frame lores. À recalibrer si on
   change `lores_width`/`lores_height`. Bas = détecte le chat mais plus de faux
   positifs ; laisser HKSV (Apple TV) classer Personnes/Animaux/Véhicules.

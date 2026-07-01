@@ -29,6 +29,17 @@ class CameraManager:
     decode needed.
     """
 
+    # IR night-vision detector thresholds (lores U/V planes, uint8, neutral=128).
+    # 850 nm illumination collapses chroma to a uniform residual cast: both
+    # planes near-constant (low std) with V pushed warm by the pink cast the
+    # AWB cannot fully cancel. Daylight scenes have diverse hues (high std).
+    IR_CHROMA_STD_MAX = 6.0   # max std on each of U and V → "uniform chroma"
+    IR_CAST_MIN = 4.0         # min (V mean − 128) → residual warm cast present
+    # Hysteresis, counted in analysed lores frames (analysis_fps per second).
+    # Exit is slower than entry so car headlights at night can't flip us back.
+    IR_ENTRY_FRAMES = 15      # ≈3 s at 5 fps before switching to grayscale
+    IR_EXIT_FRAMES = 50       # ≈10 s at 5 fps before returning to colour
+
     _instance = None
     _instance_lock = threading.Lock()
 
@@ -55,17 +66,16 @@ class CameraManager:
         self._contrast = float(self._cfg.get("contrast", 1.0))
         self._saturation = float(self._cfg.get("saturation", 1.0))
 
-        # Night vision: when the IR-cut filter is removed the whole image gets a
-        # pink/magenta cast. We detect it and drop the ISP Saturation to 0 so the
-        # entire pipeline (stream + snapshot) goes grayscale at zero CPU cost.
-        self._ir_grayscale = bool(self._cfg.get("ir_grayscale", True))
-        # Seconds between colour probes in night mode. ColourGains proved too
-        # noisy with 850 nm LEDs (gains barely shift at dawn) and triggered probes
-        # in rapid bursts, so exit detection is timer-only.
-        self._ir_probe_interval = float(self._cfg.get("ir_probe_interval", 90))
+        # Night vision (beta): under 850 nm IR light the image is monochrome with
+        # a pink cast. Detection reads the *untouched* lores chroma planes every
+        # analysed frame; the effect neutralises the main frame's U/V planes in
+        # the camera callback, before the H264 encoder consumes the buffer. The
+        # ISP Saturation is never touched, so day/night transitions are always
+        # measured on real colour data — no probe, no deadlock.
+        self._ir_grayscale = bool(self._cfg.get("ir_grayscale", False))
         self._ir_mode = False
-        self._ir_last_probe: float = 0.0
-        self._ir_pending_check: bool = False
+        self._ir_streak = 0
+        self._MappedArray = None  # picamera2.MappedArray, bound in start()
 
         self._picam2 = None
         self._encoder = None
@@ -100,10 +110,11 @@ class CameraManager:
 
     def start(self) -> None:
         """Configure picamera2, start H264 encoder, and begin lores capture."""
-        from picamera2 import Picamera2
+        from picamera2 import MappedArray, Picamera2
         from picamera2.encoders import H264Encoder
         from picamera2.outputs import FileOutput
 
+        self._MappedArray = MappedArray
         self._picam2 = Picamera2()
 
         cfg_kwargs = dict(
@@ -270,15 +281,25 @@ class CameraManager:
         now = time.monotonic()
         self._last_frame_time = now  # always update for the watchdog
 
-        if self._lores_interval > 0 and now - self._last_lores_time < self._lores_interval:
-            return  # skip: detector doesn't need this frame yet
-        self._last_lores_time = now
+        # Detector frames, throttled to analysis_fps. The IR check reads the
+        # lores chroma planes here, BEFORE any neutralisation below, so night
+        # mode is always measured on real colour data.
+        if self._lores_interval <= 0 or now - self._last_lores_time >= self._lores_interval:
+            self._last_lores_time = now
+            arr = request.make_array("lores")
+            if self._ir_grayscale:
+                self._update_night_mode(arr)
+            y_plane = arr[:self._lores_h, :self._lores_w].copy()
+            with self._lores_condition:
+                self._latest_lores_frame = y_plane
+                self._lores_condition.notify_all()
 
-        arr = request.make_array("lores")
-        y_plane = arr[:self._lores_h, :self._lores_w].copy()
-        with self._lores_condition:
-            self._latest_lores_frame = y_plane
-            self._lores_condition.notify_all()
+        # Night mode: neutralise the main frame's chroma in place (U and V →
+        # 128 = perfectly grey) before the H264 encoder consumes the buffer.
+        # Stream and snapshot both come out grayscale; ISP stays untouched.
+        if self._ir_mode and self._MappedArray is not None:
+            with self._MappedArray(request, "main") as m:
+                m.array[self._height:, :] = 128
 
         if (self._snapshot_interval > 0
                 and time.monotonic() - self._last_snapshot >= self._snapshot_interval):
@@ -289,70 +310,51 @@ class CameraManager:
             except queue.Full:
                 pass  # previous snapshot still pending — skip this frame
 
-    @staticmethod
-    def _is_infrared(bgr: np.ndarray) -> bool:
-        """Return True when the frame has a strong pink/IR cast (R channel >> B channel)."""
-        mean = bgr.mean(axis=(0, 1))  # [B, G, R]
-        return float(mean[2]) - float(mean[0]) > 25 and float(mean[2]) > 60
-
-
-    def _set_saturation(self, value: float) -> None:
-        if self._picam2 is not None:
-            try:
-                self._picam2.set_controls({"Saturation": value})
-            except Exception:
-                logger.debug("set_controls(Saturation) failed", exc_info=True)
-
-    def _update_night_mode(self, thumb: np.ndarray) -> bool:
+    @classmethod
+    def _is_ir_frame(cls, u_mean: float, u_std: float,
+                     v_mean: float, v_std: float) -> bool:
         """
-        Decide whether the current scene is infrared and keep ISP Saturation in
-        sync. Returns True when the frame should be converted to grayscale.
+        Classify one frame's chroma statistics as IR night vision or not.
 
-        Exit strategy — periodic colour probe:
-          1. When the timer fires, restore saturation and set _ir_pending_check.
-          2. The next snapshot arrives in colour (saturation=1.0); _is_infrared()
-             runs on it and decides.
-          3. Saturation reverts to 0 immediately after the check.
-        The live stream and snapshots show colour for at most one snapshot_interval
-        (~5 s on Pi Zero 2 W) per probe — once every ir_probe_interval seconds.
-
-        capture_array() is NOT used: calling it from a non-camera thread while the
-        H264 encoder is running causes picamera2 buffer contention and CPU spikes.
+        The signature of 850 nm illumination is *uniformity*, not amplitude:
+        every pixel carries the same residual cast, so both chroma planes are
+        near-constant (low std) with V pushed warm (above neutral 128). A
+        daylight scene has diverse hues → high chroma std. This is robust to
+        the AWB partially cancelling the cast, which broke the old mean(R)−
+        mean(B) heuristic.
         """
-        if not self._ir_grayscale:
-            return False
+        uniform = u_std < cls.IR_CHROMA_STD_MAX and v_std < cls.IR_CHROMA_STD_MAX
+        cast = (v_mean - 128.0) > cls.IR_CAST_MIN
+        return uniform and cast
 
-        now = time.monotonic()
+    def _update_night_mode(self, lores_arr) -> None:
+        """
+        Feed one analysed lores frame to the IR detector. Reads the U/V planes
+        of the planar YUV420 array — always untouched colour data, since the
+        neutralisation below only ever writes to the *main* stream's buffer.
+        """
+        h, w = self._lores_h, self._lores_w
+        quarter = h // 4  # each packed chroma plane spans h/4 array rows
+        u = lores_arr[h:h + quarter, :w]
+        v = lores_arr[h + quarter:h + 2 * quarter, :w]
+        self._apply_ir_vote(self._is_ir_frame(
+            float(u.mean()), float(u.std()), float(v.mean()), float(v.std())
+        ))
 
-        # ── Pending confirmation: this thumbnail is already in colour ─────────
-        if self._ir_pending_check:
-            self._ir_pending_check = False
-            self._ir_last_probe = now
-            if self._is_infrared(thumb):
-                self._set_saturation(0.0)
-                logger.debug("Night mode re-confirmed via colour probe")
-            else:
-                self._ir_mode = False
-                self._set_saturation(0.0)
-                logger.info("Daylight confirmed via colour probe → colour stream")
-            return self._ir_mode
-
-        # ── Entry: not in night mode, thumbnail is colour ────────────────────
-        if not self._ir_mode:
-            if self._is_infrared(thumb):
-                self._ir_mode = True
-                self._ir_last_probe = now
-                self._set_saturation(0.0)
+    def _apply_ir_vote(self, is_ir: bool) -> None:
+        """Hysteresis: flip _ir_mode only after N consecutive contrary votes."""
+        if is_ir == self._ir_mode:
+            self._ir_streak = 0
+            return
+        self._ir_streak += 1
+        needed = self.IR_EXIT_FRAMES if self._ir_mode else self.IR_ENTRY_FRAMES
+        if self._ir_streak >= needed:
+            self._ir_mode = is_ir
+            self._ir_streak = 0
+            if is_ir:
                 logger.info("Night vision detected → grayscale stream")
-            return self._ir_mode
-
-        # ── In night mode: fire a probe when the timer expires ────────────────
-        if (now - self._ir_last_probe) >= self._ir_probe_interval:
-            self._set_saturation(self._saturation)
-            self._ir_pending_check = True
-            logger.info("IR exit probe (periodic) → colour check next snapshot")
-
-        return self._ir_mode
+            else:
+                logger.info("Daylight detected → colour stream")
 
     def _snapshot_worker(self) -> None:
         """Persistent worker: encodes and writes JPEG snapshots from the queue."""
@@ -364,11 +366,10 @@ class CameraManager:
                     break
                 continue
             try:
+                # In night mode the main frame's chroma was already neutralised
+                # in the camera callback, so this converts to a grey BGR as-is.
                 bgr = cv2.cvtColor(arr, cv2.COLOR_YUV2BGR_I420)
                 thumb = cv2.resize(bgr, (1280, 720), interpolation=cv2.INTER_AREA)
-                if self._update_night_mode(thumb):
-                    gray = cv2.cvtColor(thumb, cv2.COLOR_BGR2GRAY)
-                    thumb = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
                 ok, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 92])
                 if ok:
                     tmp = self._snapshot_path + ".tmp"

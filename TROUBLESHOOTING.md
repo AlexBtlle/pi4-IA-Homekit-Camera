@@ -211,17 +211,26 @@ journalctl -u pi4cam -f | grep -i motion
 ## IR night vision (beta)
 
 `ir_grayscale` is a **beta** feature, **off by default**. When enabled, the
-stream and snapshot desaturate at night to kill the pink/magenta cast from
-850 nm IR LEDs (done via ISP saturation, zero CPU).
+stream and snapshot switch to grayscale under IR illumination, killing the pink
+cast from 850 nm LEDs.
 
-- **Exit is by periodic colour probe** (`ir_probe_interval`, default 90 s): the
-  ISP briefly restores colour for one snapshot, checks whether the scene is still
-  infrared, then reverts. AWB gains are *not* a reliable exit signal at 850 nm —
-  don't expect gain-based detection to work.
-- **Stuck in grayscale after dawn?** The scene only re-checks every
-  `ir_probe_interval` seconds, so expect up to that delay. If it never exits,
-  confirm `ir_grayscale` is intentional and lower `ir_probe_interval` for a
-  quicker check.
+**How it works** (v2): IR is detected from the *chroma statistics* of the
+low-res detection stream — 850 nm light collapses chroma to a uniform residual
+cast (near-zero variance), whereas daylight scenes have diverse hues. When
+night mode is active, the frame's colour planes are neutralised in the camera
+callback just before H264 encoding; the ISP saturation is never touched, so the
+detector always sees real colour data and dawn/dusk transitions are picked up
+within seconds (entry ~3 s, exit ~10 s of consistent frames — the asymmetry
+stops car headlights from flipping the mode at night).
+
+- **Transitions logged**: look for `Night vision detected → grayscale stream` /
+  `Daylight detected → colour stream` in `journalctl -u pi4cam`.
+- **Never enters grayscale at night?** The AWB may be cancelling the cast more
+  aggressively than the thresholds assume. The detector constants live at the
+  top of `camera/camera_manager.py` (`IR_CHROMA_STD_MAX`, `IR_CAST_MIN`).
+- **AWB gains and Lux are *not* usable signals** at 850 nm (gains barely move,
+  and IR reads as ~200 lux on an OV5647) — past approaches based on them were
+  removed; don't reintroduce them.
 
 ---
 
