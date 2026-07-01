@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Deep-merge new config keys into an existing config.yaml on update.
 
-Canonical, importable version of the merge install.sh performs when updating an
+Single source of truth for the merge install.sh performs when updating an
 existing install: the user's values are preserved and only keys introduced by a
-newer version are injected (recursively for nested sections). install.sh keeps
-its own inline copy of this logic; tests/test_config_merge.py exercises both and
-asserts they stay in sync (see the anti-drift test), so the copies can't
-silently diverge.
+newer version are injected (recursively for nested sections). install.sh calls
+this module directly (`python3 scripts/config_merge.py <existing> <defaults>`),
+and tests/test_config_merge.py locks the semantics below.
 
 NOTE: like install.sh, this uses PyYAML's safe_load/dump, which does NOT
 preserve comments. That is deliberate and unchanged — it is why install.sh also

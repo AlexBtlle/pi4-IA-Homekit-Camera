@@ -1,11 +1,8 @@
-"""Tests for the config deep-merge used on update (install.sh + scripts).
+"""Tests for the config deep-merge used on update (scripts/config_merge.py).
 
-Locks the merge semantics that every future config key relies on, and guards
-install.sh's inline copy against drifting from scripts/config_merge.py.
+Locks the merge semantics that every future config key relies on, and checks
+install.sh delegates to the module instead of carrying its own copy.
 """
-import re
-import subprocess
-import sys
 from pathlib import Path
 
 import yaml
@@ -89,45 +86,12 @@ def test_merge_files_roundtrip(tmp_path):
 
 
 # ----------------------------------------------------------------------
-# anti-drift — install.sh's inline merge must match the module
+# wiring — install.sh must delegate to the module, not carry its own copy
 # ----------------------------------------------------------------------
 
-def _extract_install_merge() -> str:
-    """Return the Python source of install.sh's inline `<<'PYEOF' ... PYEOF` merge."""
+def test_install_sh_delegates_to_the_module():
     text = INSTALL_SH.read_text()
-    m = re.search(r"<<'PYEOF'\n(.*?)\nPYEOF", text, re.DOTALL)
-    assert m, "could not find the PYEOF merge block in install.sh"
-    return m.group(1)
-
-
-def test_install_sh_merge_matches_module(tmp_path):
-    """Run install.sh's own merge block and check it produces the same result as
-    scripts/config_merge.py — so the two copies can't silently drift."""
-    script = tmp_path / "install_merge.py"
-    script.write_text(_extract_install_merge())
-
-    user_text = (
-        "camera:\n  width: 256\n  user_tweak: 42\n"
-        "detection:\n  min_motion_area: 300\n"
-    )
-    defaults_text = (
-        "camera:\n  width: 1920\n  snapshot_path: /dev/shm/x.jpg\n"
-        "detection:\n  min_motion_area: 1500\n  new_key: true\n"
-    )
-
-    # install.sh path: writes the merged result back to argv[1]
-    user = tmp_path / "config.yaml"
-    defaults = tmp_path / "defaults.yaml"
-    user.write_text(user_text)
-    defaults.write_text(defaults_text)
-    subprocess.run(
-        [sys.executable, str(script), str(user), str(defaults)], check=True
-    )
-    install_result = yaml.safe_load(user.read_text())
-
-    # module path: same inputs through merge_files
-    user2 = tmp_path / "config2.yaml"
-    user2.write_text(user_text)
-    module_result = merge_files(str(user2), str(defaults))
-
-    assert install_result == module_result
+    # calls the shared module...
+    assert "scripts/config_merge.py" in text
+    # ...and does not reintroduce an inline copy of the merge logic
+    assert "def merge_new_keys" not in text
