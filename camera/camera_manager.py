@@ -37,6 +37,11 @@ class CameraManager:
     # casts all observed on the same rig) — so only its amplitude is tested.
     IR_CHROMA_STD_MAX = 6.0   # max std on each of U and V → "uniform chroma"
     IR_CAST_MIN = 4.0         # min |mean − 128| on U or V → cast present
+    # Measured on the real rig at night: u=186 ±25 — the AWB cast is
+    # *multiplicative* (scales with pixel luminance), so chroma std can be
+    # large. But no real scene under a working AWB (grey-world) averages this
+    # far from neutral: an extreme mean offset is conclusive on its own.
+    IR_CAST_STRONG = 20.0     # |mean − 128| beyond which IR is certain, any std
     # Hysteresis, counted in analysed lores frames (analysis_fps per second).
     # Exit is slower than entry so car headlights at night can't flip us back.
     IR_ENTRY_FRAMES = 15      # ≈3 s at 5 fps before switching to grayscale
@@ -319,18 +324,28 @@ class CameraManager:
         """
         Classify one frame's chroma statistics as IR night vision or not.
 
-        The signature of 850 nm illumination is *uniformity*, not hue: every
-        pixel carries the same residual cast, so both chroma planes are
-        near-constant (low std) with a clear offset from neutral on at least
-        one plane. The offset's direction is deliberately ignored — under
-        monochromatic IR the AWB has no colour information and lands on
-        arbitrary gains (pink, red and blue casts observed on the same rig,
-        varying between nights). A daylight scene has diverse hues → high
-        chroma std.
+        Under monochromatic 850 nm light the AWB has no colour information:
+        it lands on arbitrary gains (pink, red and blue casts observed on the
+        same rig, varying between nights), so the cast's *direction* is
+        ignored — only its amplitude matters. Two tiers:
+
+        1. Extreme mean offset (> IR_CAST_STRONG): conclusive on its own —
+           grey-world AWB never leaves a real scene's average there. No
+           uniformity required: the cast is multiplicative (∝ luminance),
+           so bright areas carry more chroma offset than dark ones and the
+           std can be large (measured u=186 ±25 on the real rig).
+        2. Moderate offset (> IR_CAST_MIN): only with uniform chroma (low
+           std on both planes) — the partially-neutralised cast case.
         """
+        cast = max(abs(u_mean - 128.0), abs(v_mean - 128.0))
+        if cast > cls.IR_CAST_STRONG:
+            # Extreme mean offset: a working AWB never leaves the frame
+            # average this far from neutral — only monochromatic light does.
+            # The cast being multiplicative (∝ luminance), std may be large,
+            # so uniformity is deliberately not required on this tier.
+            return True
         uniform = u_std < cls.IR_CHROMA_STD_MAX and v_std < cls.IR_CHROMA_STD_MAX
-        cast = max(abs(u_mean - 128.0), abs(v_mean - 128.0)) > cls.IR_CAST_MIN
-        return uniform and cast
+        return uniform and cast > cls.IR_CAST_MIN
 
     def _update_night_mode(self, lores_arr) -> None:
         """

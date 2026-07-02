@@ -30,6 +30,22 @@ def test_ir_blue_cast():
     assert CameraManager._is_ir_frame(u_mean=150, u_std=2.0, v_mean=112, v_std=2.5)
 
 
+def test_ir_real_night_measurement():
+    # Regression: actual journalctl numbers from the rig (2026-07-02 22:48).
+    # The multiplicative cast makes u_std huge — the strong-cast tier must
+    # classify this as IR without any uniformity requirement.
+    assert CameraManager._is_ir_frame(u_mean=186.3, u_std=25.1, v_mean=121.4, v_std=2.5)
+
+
+def test_strong_cast_boundary():
+    at = 128.0 + CameraManager.IR_CAST_STRONG
+    # at the threshold with noisy std: falls through to the moderate tier,
+    # which rejects on uniformity
+    assert not CameraManager._is_ir_frame(at, 25.0, 128.0, 25.0)
+    # just above: strong tier fires regardless of std
+    assert CameraManager._is_ir_frame(at + 0.1, 25.0, 128.0, 25.0)
+
+
 def test_ir_red_cast():
     # also observed between nights on the same hardware
     assert CameraManager._is_ir_frame(u_mean=124, u_std=1.5, v_mean=155, v_std=3.0)
