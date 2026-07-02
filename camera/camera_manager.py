@@ -31,10 +31,12 @@ class CameraManager:
 
     # IR night-vision detector thresholds (lores U/V planes, uint8, neutral=128).
     # 850 nm illumination collapses chroma to a uniform residual cast: both
-    # planes near-constant (low std) with V pushed warm by the pink cast the
-    # AWB cannot fully cancel. Daylight scenes have diverse hues (high std).
+    # planes near-constant (low std) with a clear offset from neutral. The
+    # cast's *direction* is unpredictable — under monochromatic IR the AWB has
+    # no colour to work with and lands on arbitrary gains (pink, red and blue
+    # casts all observed on the same rig) — so only its amplitude is tested.
     IR_CHROMA_STD_MAX = 6.0   # max std on each of U and V → "uniform chroma"
-    IR_CAST_MIN = 4.0         # min (V mean − 128) → residual warm cast present
+    IR_CAST_MIN = 4.0         # min |mean − 128| on U or V → cast present
     # Hysteresis, counted in analysed lores frames (analysis_fps per second).
     # Exit is slower than entry so car headlights at night can't flip us back.
     IR_ENTRY_FRAMES = 15      # ≈3 s at 5 fps before switching to grayscale
@@ -75,6 +77,7 @@ class CameraManager:
         self._ir_grayscale = bool(self._cfg.get("ir_grayscale", False))
         self._ir_mode = False
         self._ir_streak = 0
+        self._ir_last_stats_log = 0.0
         self._MappedArray = None  # picamera2.MappedArray, bound in start()
 
         self._picam2 = None
@@ -316,15 +319,17 @@ class CameraManager:
         """
         Classify one frame's chroma statistics as IR night vision or not.
 
-        The signature of 850 nm illumination is *uniformity*, not amplitude:
-        every pixel carries the same residual cast, so both chroma planes are
-        near-constant (low std) with V pushed warm (above neutral 128). A
-        daylight scene has diverse hues → high chroma std. This is robust to
-        the AWB partially cancelling the cast, which broke the old mean(R)−
-        mean(B) heuristic.
+        The signature of 850 nm illumination is *uniformity*, not hue: every
+        pixel carries the same residual cast, so both chroma planes are
+        near-constant (low std) with a clear offset from neutral on at least
+        one plane. The offset's direction is deliberately ignored — under
+        monochromatic IR the AWB has no colour information and lands on
+        arbitrary gains (pink, red and blue casts observed on the same rig,
+        varying between nights). A daylight scene has diverse hues → high
+        chroma std.
         """
         uniform = u_std < cls.IR_CHROMA_STD_MAX and v_std < cls.IR_CHROMA_STD_MAX
-        cast = (v_mean - 128.0) > cls.IR_CAST_MIN
+        cast = max(abs(u_mean - 128.0), abs(v_mean - 128.0)) > cls.IR_CAST_MIN
         return uniform and cast
 
     def _update_night_mode(self, lores_arr) -> None:
@@ -337,9 +342,24 @@ class CameraManager:
         quarter = h // 4  # each packed chroma plane spans h/4 array rows
         u = lores_arr[h:h + quarter, :w]
         v = lores_arr[h + quarter:h + 2 * quarter, :w]
-        self._apply_ir_vote(self._is_ir_frame(
-            float(u.mean()), float(u.std()), float(v.mean()), float(v.std())
-        ))
+        u_mean, u_std = float(u.mean()), float(u.std())
+        v_mean, v_std = float(v.mean()), float(v.std())
+        is_ir = self._is_ir_frame(u_mean, u_std, v_mean, v_std)
+
+        # Calibration log (beta): one line per minute with the raw chroma
+        # statistics, so thresholds are tuned from journalctl evidence rather
+        # than assumptions about a given LED/lens/AWB combination.
+        now = time.monotonic()
+        if now - self._ir_last_stats_log >= 60.0:
+            self._ir_last_stats_log = now
+            logger.info(
+                "IR stats: u=%.1f ±%.1f  v=%.1f ±%.1f  → frame=%s mode=%s",
+                u_mean, u_std, v_mean, v_std,
+                "IR" if is_ir else "colour",
+                "night" if self._ir_mode else "day",
+            )
+
+        self._apply_ir_vote(is_ir)
 
     def _apply_ir_vote(self, is_ir: bool) -> None:
         """Hysteresis: flip _ir_mode only after N consecutive contrary votes."""

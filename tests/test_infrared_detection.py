@@ -19,9 +19,20 @@ def make_manager() -> CameraManager:
 # _is_ir_frame — one frame's chroma statistics
 # ----------------------------------------------------------------------
 
-def test_typical_ir_night():
-    # uniform chroma, warm residual cast → IR
+def test_ir_pink_cast():
+    # uniform chroma, warm cast (the original rig's signature) → IR
     assert CameraManager._is_ir_frame(u_mean=120, u_std=2.0, v_mean=140, v_std=3.0)
+
+
+def test_ir_blue_cast():
+    # observed on the enclosure's LED pods + fisheye lens: the AWB landed
+    # blue — uniform chroma pushed cold. Direction must not matter.
+    assert CameraManager._is_ir_frame(u_mean=150, u_std=2.0, v_mean=112, v_std=2.5)
+
+
+def test_ir_red_cast():
+    # also observed between nights on the same hardware
+    assert CameraManager._is_ir_frame(u_mean=124, u_std=1.5, v_mean=155, v_std=3.0)
 
 
 def test_ir_with_awb_partially_cancelling_cast():
@@ -35,13 +46,8 @@ def test_colourful_daylight():
 
 
 def test_grey_overcast_scene_without_cast():
-    # uniform but chroma-neutral (fog, concrete): no warm cast → not IR
+    # uniform but chroma-neutral (fog, concrete): no cast at all → not IR
     assert not CameraManager._is_ir_frame(u_mean=128, u_std=1.0, v_mean=128.5, v_std=1.0)
-
-
-def test_cool_cast_is_not_ir():
-    # uniform but V *below* neutral (blueish) → not the IR signature
-    assert not CameraManager._is_ir_frame(u_mean=132, u_std=1.0, v_mean=120, v_std=1.0)
 
 
 def test_headlights_break_uniformity():
@@ -50,10 +56,25 @@ def test_headlights_break_uniformity():
     assert not CameraManager._is_ir_frame(u_mean=122, u_std=3.0, v_mean=140, v_std=15.0)
 
 
-def test_cast_threshold_boundary():
+def test_cast_threshold_boundary_warm():
     at = 128.0 + CameraManager.IR_CAST_MIN
-    assert not CameraManager._is_ir_frame(120, 1.0, at, 1.0)        # not strictly above
-    assert CameraManager._is_ir_frame(120, 1.0, at + 0.1, 1.0)      # just above
+    assert not CameraManager._is_ir_frame(128, 1.0, at, 1.0)        # not strictly above
+    assert CameraManager._is_ir_frame(128, 1.0, at + 0.1, 1.0)      # just above
+
+
+def test_cast_threshold_boundary_cold():
+    # symmetric: a cast below neutral counts with the same amplitude
+    at = 128.0 - CameraManager.IR_CAST_MIN
+    assert not CameraManager._is_ir_frame(128, 1.0, at, 1.0)
+    assert CameraManager._is_ir_frame(128, 1.0, at - 0.1, 1.0)
+
+
+def test_cast_on_u_plane_alone_counts():
+    # the offset can sit on either plane — U-only cast is enough
+    assert CameraManager._is_ir_frame(
+        u_mean=128.0 + CameraManager.IR_CAST_MIN + 0.1, u_std=1.0,
+        v_mean=128.0, v_std=1.0,
+    )
 
 
 def test_std_threshold_boundary():
