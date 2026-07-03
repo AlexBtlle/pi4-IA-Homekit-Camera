@@ -38,22 +38,23 @@ class CountingOutput(Output):
 
 def set_bitrate_live(encoder, bps: int) -> None:
     """Poke V4L2_CID_MPEG_VIDEO_BITRATE on the running encoder's fd —
-    the exact mechanism CameraManager would use in Phase 1."""
-    from v4l2 import (  # bundled with python3-picamera2's dependencies
-        V4L2_CID_MPEG_VIDEO_BITRATE,
-        V4L2_CTRL_CLASS_MPEG,
-        VIDIOC_S_EXT_CTRLS,
-        v4l2_ext_control,
-        v4l2_ext_controls,
-    )
-    ctrl = v4l2_ext_control()
-    ctrl.id = V4L2_CID_MPEG_VIDEO_BITRATE
+    the exact mechanism CameraManager would use in Phase 1.
+
+    The V4L2 constants/structs are taken from picamera2's own encoder module
+    namespace (it star-imports them from whatever V4L2 binding the distro
+    ships — `videodev2` on Pi OS Bookworm), so this stays in lockstep with
+    whatever picamera2 itself uses.
+    """
+    from picamera2.encoders import v4l2_encoder as v4l2
+
+    ctrl = v4l2.v4l2_ext_control()
+    ctrl.id = v4l2.V4L2_CID_MPEG_VIDEO_BITRATE
     ctrl.value = bps
-    ctrls = v4l2_ext_controls()
-    ctrls.ctrl_class = V4L2_CTRL_CLASS_MPEG
+    ctrls = v4l2.v4l2_ext_controls()
+    ctrls.ctrl_class = v4l2.V4L2_CTRL_CLASS_MPEG
     ctrls.count = 1
     ctrls.controls = ctypes.pointer(ctrl)
-    fcntl.ioctl(encoder.vd, VIDIOC_S_EXT_CTRLS, ctrls)
+    fcntl.ioctl(encoder.vd, v4l2.VIDIOC_S_EXT_CTRLS, ctrls)
 
 
 def main() -> None:
