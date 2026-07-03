@@ -60,6 +60,13 @@ class RtspPublisher:
                         "-i", f"pipe:{self._pipe_r_fd}",
                         "-c:v", "copy",
                         "-rtsp_transport", "tcp",
+                        # Bound every socket I/O (µs): a frozen/hung mediamtx
+                        # must make ffmpeg EXIT — handing over to the drain +
+                        # backoff loop — instead of blocking alive forever
+                        # with a full pipe (the "zombie ffmpeg" mode, #34).
+                        # 5 s keeps the whole stall well under the 10 s frame
+                        # watchdog.
+                        "-rw_timeout", "5000000",
                         "-f", "rtsp",
                         self._rtsp_url,
                     ],

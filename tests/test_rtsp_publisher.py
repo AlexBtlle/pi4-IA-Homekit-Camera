@@ -93,6 +93,27 @@ def test_short_run_does_not_reset(monkeypatch):
     assert delays == [1, 2, 4]
 
 
+def test_ffmpeg_has_io_timeout(monkeypatch):
+    # A hung mediamtx must make ffmpeg exit (zombie mode, #34) so the drain +
+    # backoff loop can take over — the args must carry an I/O timeout.
+    pub = make_publisher()
+    monkeypatch.setattr(pub, "_drain_pipe", lambda s: None)
+    captured = {}
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        pub._stop_event.set()
+        return FakeProc()
+
+    monkeypatch.setattr(rtsp_publisher.subprocess, "Popen", fake_popen)
+    pub._run()
+    args = captured["args"]
+    assert "-rw_timeout" in args
+    timeout_us = int(args[args.index("-rw_timeout") + 1])
+    # must expire comfortably under the 10 s frame watchdog
+    assert 0 < timeout_us <= 8_000_000
+
+
 # ----------------------------------------------------------------------
 # Pipe draining
 # ----------------------------------------------------------------------
