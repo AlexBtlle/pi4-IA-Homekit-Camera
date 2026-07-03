@@ -1,3 +1,4 @@
+import fcntl
 import os
 import queue
 import time
@@ -170,6 +171,14 @@ class CameraManager:
         self._picam2.pre_callback = self._lores_callback
 
         self._pipe_r, self._pipe_w = os.pipe()
+        # Enlarge the pipe from the 64 KB default (~65 ms of video at 8 Mbps)
+        # to 1 MB (~1–2 s): short scheduling hiccups of ffmpeg/mediamtx no
+        # longer block the encoder's output thread. Best effort — the kernel
+        # cap (/proc/sys/fs/pipe-max-size, 1 MB by default) may be lower.
+        try:
+            fcntl.fcntl(self._pipe_w, getattr(fcntl, "F_SETPIPE_SZ", 1031), 1 << 20)
+        except OSError:
+            logger.debug("Could not enlarge the H264 pipe", exc_info=True)
         # iperiod = fps → a keyframe every 1 s. Live view (-c:v copy) can only
         # render once it receives a keyframe, so the shortest practical GOP cuts
         # the time-to-first-frame. HKSV still works: the prebuffer fragments on
