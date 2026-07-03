@@ -22,6 +22,7 @@ import {
   VideoCodecType,
 } from "@homebridge/hap-nodejs";
 
+import { BitrateGovernor } from "./bitrate";
 import { homekitDir, loadConfig, loadPairing } from "./config";
 import { SnapshotProvider } from "./snapshot";
 import { StreamingDelegate } from "./streaming";
@@ -50,7 +51,24 @@ function main(): void {
     .setCharacteristic(Characteristic.FirmwareRevision, "1.4.0");
 
   const snapshots = new SnapshotProvider(config.snapshotPath);
-  const streamingDelegate = new StreamingDelegate(config.rtspUrl, snapshots);
+  // Dynamic bitrate (#47): drive the camera's encoder toward what live
+  // viewers negotiate, back to full quality when they leave. Best effort —
+  // an unreachable camera service must never break streaming itself.
+  const bitrateGovernor = new BitrateGovernor((kbps) => {
+    fetch(`${config.cameraControlUrl}/bitrate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kbps }),
+    }).then(
+      () => console.log(`[bitrate] encoder → ${kbps} kbps`),
+      (e) => console.error("[bitrate] control endpoint unreachable:", e.message),
+    );
+  }, config.bitrateKbps);
+  const streamingDelegate = new StreamingDelegate(
+    config.rtspUrl,
+    snapshots,
+    bitrateGovernor,
+  );
   const recordingDelegate = new RecordingDelegate(config.rtspUrl);
 
   // Standard resolutions in descending order. Only those at or below the

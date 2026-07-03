@@ -35,6 +35,11 @@ camera:
   height: 1080
   fps: 30
   bitrate: 8000000        # H264 bit/s — Pi Zero 2W: 4000000 | Pi 3: 6000000 | Pi 4: 8000000
+                          # This is the CEILING (used at full quality for HKSV recordings);
+                          # live viewers dynamically lower the encoder to what they negotiate
+                          # (remote/4G ≈ 2 Mbps) and it returns here when they leave (#47).
+  control_port: 8990      # localhost-only endpoint (HomeKit app → camera) driving the
+                          # dynamic bitrate — never exposed on the network
   rotation: 0             # 0 | 90 | 180 | 270
   lores_width: 320        # motion-detection stream width  (Pi Zero 2W: 256)
   lores_height: 240       # motion-detection stream height (Pi Zero 2W: 192)

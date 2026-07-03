@@ -13,6 +13,7 @@ import {
   StreamRequestTypes,
 } from "@homebridge/hap-nodejs";
 
+import { BitrateGovernor } from "./bitrate";
 import { SnapshotProvider } from "./snapshot";
 
 interface SessionInfo {
@@ -53,6 +54,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
   constructor(
     private readonly rtspUrl: string,
     private readonly snapshots: SnapshotProvider,
+    private readonly bitrate?: BitrateGovernor,
   ) {}
 
   // ----------------------------------------------------------------------
@@ -134,8 +136,10 @@ export class StreamingDelegate implements CameraStreamingDelegate {
         this.startStream(request, callback);
         break;
       case StreamRequestTypes.RECONFIGURE:
-        // Passthrough copy can't change bitrate/resolution mid-stream; the
-        // source is fixed. Acknowledge so HomeKit keeps the existing stream.
+        // Resolution can't change mid-stream (passthrough), but the bitrate
+        // can: forward the renegotiated cap to the encoder via the governor
+        // — this is how a degrading remote/cellular link gets smooth (#47).
+        this.bitrate?.setSession(request.sessionID, request.video.max_bit_rate);
         callback();
         break;
       case StreamRequestTypes.STOP:
@@ -156,6 +160,10 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       return;
     }
     this.pendingSessions.delete(sessionID);
+
+    // Drive the shared encoder toward what this viewer negotiated — ~2 Mbps
+    // on a remote/cellular link, higher on the LAN (#47).
+    this.bitrate?.setSession(sessionID, request.video.max_bit_rate);
 
     const mtu = request.video.mtu || 1316;
     const srtpParams = session.videoSRTP.toString("base64");
@@ -246,5 +254,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       this.ongoingSessions.delete(sessionID);
     }
     this.pendingSessions.delete(sessionID);
+    // Last viewer gone → the governor restores full quality (debounced).
+    this.bitrate?.clearSession(sessionID);
   }
 }
