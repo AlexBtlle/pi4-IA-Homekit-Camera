@@ -14,8 +14,14 @@
  * keyframe disruption — transparent for every -c:v copy consumer.
  */
 
-/** Floor: below this the image degrades faster than networks improve. */
-export const MIN_KBPS = 1500;
+/**
+ * Floor: below this the image degrades faster than networks improve.
+ * Field-calibrated: HomeKit negotiates far lower (132–299 kbps observed),
+ * which would be pixel mush at 1080p; 1000 kbps stays watchable on a phone
+ * screen while giving constrained links (and the Zero 2 W's stream startup)
+ * the lightest first GOP we're willing to serve.
+ */
+export const MIN_KBPS = 1000;
 
 export function computeTargetKbps(
   sessions: number[],
