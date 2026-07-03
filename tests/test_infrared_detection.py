@@ -53,7 +53,18 @@ def test_ir_red_cast():
 
 def test_ir_with_awb_partially_cancelling_cast():
     # AWB pulled the cast down but couldn't kill it; still uniform → IR
-    assert CameraManager._is_ir_frame(u_mean=126, u_std=1.5, v_mean=133, v_std=2.0)
+    assert CameraManager._is_ir_frame(u_mean=126, u_std=1.5, v_mean=138, v_std=2.0)
+
+
+def test_real_morning_muted_daylight():
+    # Regression: actual journalctl numbers (2026-07-03 07:04, after the IR
+    # LEDs switched off). Early-morning colours are muted — V sits ~4 from
+    # neutral with stds near the uniformity limit. Must stay colour: this is
+    # why IR_CAST_MIN is 8, not 4.
+    assert not CameraManager._is_ir_frame(u_mean=128.6, u_std=7.2, v_mean=123.9, v_std=5.9)
+    # same scene, a touch calmer — even if stds dip under the limit, the
+    # moderate cast alone must not flip it
+    assert not CameraManager._is_ir_frame(u_mean=128.7, u_std=5.5, v_mean=123.6, v_std=5.6)
 
 
 def test_colourful_daylight():
