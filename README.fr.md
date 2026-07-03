@@ -152,7 +152,7 @@ Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Sur un système 
 | `homekit.camera_name` | Pi Camera | Nom affiché dans l'app Maison |
 | `homekit.motion_timeout` | 10 | Durée (s) d'activation du capteur de mouvement |
 | `detection.min_motion_area` | 1500 | Sensibilité du mouvement, en pixels absolus sur la frame basse résolution (plus petit = plus sensible). 1500 est calibré pour les humains à 320×240 ; réduire à ~300–600 pour détecter aussi les chats/chiens. À recalibrer si vous changez `lores_width`/`lores_height`. |
-| `detection.cooldown` | 30 | Délai (s) entre deux déclenchements |
+| `detection.cooldown` | 30 | Délai (s) entre deux *épisodes* de mouvement. Un mouvement continu garde le capteur — et le clip HKSV — actif pendant toute sa durée. |
 
 Les secrets d'appairage (PIN, setup ID, MAC de l'accessoire) sont générés une seule fois par l'installateur dans `/opt/pi4cam/homekit/pairing.json` et survivent aux réinstallations — mettre à jour le code ne nécessite jamais de ré-appairage.
 

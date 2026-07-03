@@ -151,7 +151,7 @@ Everything lives in one file: [`config.yaml`](config.yaml). On an installed syst
 | `homekit.camera_name` | Pi Camera | Name shown in the Home app |
 | `homekit.motion_timeout` | 10 | Seconds the motion sensor stays active |
 | `detection.min_motion_area` | 1500 | Motion sensitivity, in absolute pixels on the low-res detection frame (smaller = more sensitive). 1500 is tuned for humans at 320×240; reduce to ~300–600 to also catch cats/dogs. Recalibrate if you change `lores_width`/`lores_height`. |
-| `detection.cooldown` | 30 | Seconds between two motion triggers |
+| `detection.cooldown` | 30 | Quiet time between two motion *episodes*. A continuous movement keeps the sensor — and the HKSV clip — active for its whole duration. |
 
 The pairing secrets (PIN, setup ID, accessory MAC) are generated once by the installer into `/opt/pi4cam/homekit/pairing.json` and survive re-installs — updating the code never requires re-pairing.
 
