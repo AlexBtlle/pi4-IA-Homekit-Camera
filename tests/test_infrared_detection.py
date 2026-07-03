@@ -168,3 +168,67 @@ def test_matching_votes_keep_streak_reset():
     cam._ir_mode = True
     cam._apply_ir_vote(True)   # matches night mode
     assert cam._ir_streak == 0
+
+
+# ----------------------------------------------------------------------
+# Night exposure bias (_apply_ir_exposure, driven by _apply_ir_vote)
+# ----------------------------------------------------------------------
+
+class FakePicam2:
+    """Records set_controls calls so tests can assert the EV bias without hardware."""
+
+    def __init__(self):
+        self.controls_log = []
+
+    def set_controls(self, controls):
+        self.controls_log.append(dict(controls))
+
+
+def make_night_manager(ev):
+    cam = CameraManager({"camera": {"ir_grayscale": True, "ir_exposure": ev}})
+    cam._picam2 = FakePicam2()
+    return cam
+
+
+def test_ir_exposure_read_and_clamped():
+    assert CameraManager({"camera": {}})._ir_exposure == 0.0
+    assert CameraManager({"camera": {"ir_exposure": 1.5}})._ir_exposure == 1.5
+    # clamped to libcamera's ±8 EV range
+    assert CameraManager({"camera": {"ir_exposure": 99}})._ir_exposure == 8.0
+    assert CameraManager({"camera": {"ir_exposure": -99}})._ir_exposure == -8.0
+
+
+def test_night_transition_applies_and_reverts_bias():
+    cam = make_night_manager(1.5)
+    for _ in range(ENTRY):          # latch into night
+        cam._apply_ir_vote(True)
+    assert cam._ir_mode is True
+    assert cam._picam2.controls_log[-1] == {"ExposureValue": 1.5}
+    for _ in range(EXIT):           # return to day
+        cam._apply_ir_vote(False)
+    assert cam._ir_mode is False
+    assert cam._picam2.controls_log[-1] == {"ExposureValue": 0.0}
+
+
+def test_bias_fires_once_per_transition_not_per_frame():
+    cam = make_night_manager(1.0)
+    for _ in range(ENTRY + 20):     # keep voting night well past the latch
+        cam._apply_ir_vote(True)
+    # exactly one control write for the single day→night flip
+    assert cam._picam2.controls_log == [{"ExposureValue": 1.0}]
+
+
+def test_zero_exposure_never_touches_controls():
+    # Default (ir_exposure=0.0) → mechanism inert, existing behaviour preserved.
+    cam = make_night_manager(0.0)
+    for _ in range(ENTRY):
+        cam._apply_ir_vote(True)
+    assert cam._ir_mode is True
+    assert cam._picam2.controls_log == []
+
+
+def test_apply_ir_exposure_without_camera_is_noop():
+    # tests/hardware-less construction leaves _picam2 = None → must not raise
+    cam = CameraManager({"camera": {"ir_grayscale": True, "ir_exposure": 2.0}})
+    assert cam._picam2 is None
+    cam._apply_ir_exposure(True)   # no crash, no effect

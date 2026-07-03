@@ -57,6 +57,11 @@ camera:
                           # (uniform chroma = IR) with hysteresis; the effect neutralises the main
                           # frame's U/V before encoding. The ISP saturation is never touched, so
                           # day/night transitions are detected on real colour data.
+  ir_exposure: 1.0        # [BETA] exposure boost applied ONLY in night mode (needs ir_grayscale).
+                          # ExposureValue bias in EV/stops: +1 = 2× brighter target, +2 = 4×.
+                          # IR-lit rooms meter dark (bright windows drag the AEC down) — this lifts
+                          # the whole frame. Useful range 0.0–2.0; higher = brighter but noisier
+                          # (and no effect once the sensor is already gain-saturated). 0 = off.
 
 rtsp:
   port: 8554              # mediamtx RTSP port

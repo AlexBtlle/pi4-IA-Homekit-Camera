@@ -92,6 +92,13 @@ class CameraManager:
         self._ir_last_stats_log = 0.0
         self._MappedArray = None  # picamera2.MappedArray, bound in start()
 
+        # Night exposure bias (ExposureValue, in EV/stops): raises the auto-
+        # exposure target ONLY while night mode is latched, reverting to 0 in
+        # daylight. IR-lit rooms are metered dark (bright windows pull the AEC
+        # down); a positive EV lifts the whole frame. 0.0 = libcamera default,
+        # so existing installs are untouched. Clamped to libcamera's ±8 range.
+        self._ir_exposure = max(-8.0, min(8.0, float(self._cfg.get("ir_exposure", 0.0))))
+
         self._picam2 = None
         self._encoder = None
 
@@ -282,6 +289,27 @@ class CameraManager:
         ctrls.count = 1
         ctrls.controls = ctypes.pointer(ctrl)
         fcntl.ioctl(self._encoder.vd, v4l2.VIDIOC_S_EXT_CTRLS, ctrls)
+
+    def _apply_ir_exposure(self, on: bool) -> None:
+        """Bias the auto-exposure target while night mode is active.
+
+        ExposureValue is a live libcamera control (log2 stops: EV +1 → 2× the
+        AEC's brightness target) applied via set_controls — no reconfigure, no
+        encoder disruption, and the ISP Saturation is never touched. Fired once
+        per day↔night transition from _apply_ir_vote, never per frame.
+
+        Inert when ir_exposure is 0.0, so a default install behaves exactly as
+        before. None-guarded and wrapped so a rejected control (some sensors may
+        not expose it) never kills the capture thread.
+        """
+        if self._ir_exposure == 0.0 or self._picam2 is None:
+            return
+        ev = self._ir_exposure if on else 0.0
+        try:
+            self._picam2.set_controls({"ExposureValue": ev})
+            logger.info("Night exposure bias → EV %+.1f", ev)
+        except Exception:
+            logger.warning("ExposureValue control rejected", exc_info=True)
 
     def get_lores_frame(self, timeout: float = 1.0) -> np.ndarray | None:
         """
@@ -477,6 +505,7 @@ class CameraManager:
                 logger.info("Night vision detected → grayscale stream")
             else:
                 logger.info("Daylight detected → colour stream")
+            self._apply_ir_exposure(is_ir)
 
     def _snapshot_worker(self) -> None:
         """Persistent worker: encodes and writes JPEG snapshots from the queue."""

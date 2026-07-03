@@ -231,6 +231,14 @@ stops car headlights from flipping the mode at night).
 
 - **Transitions logged**: look for `Night vision detected → grayscale stream` /
   `Daylight detected → colour stream` in `journalctl -u pi4cam`.
+- **Image too dark at night?** Raise `camera.ir_exposure` — an ExposureValue/EV
+  bias applied *only* while night mode is latched (`+1` = 2× brighter target,
+  `+2` = 4×). IR-lit rooms tend to meter dark because bright windows drag the
+  auto-exposure down; a positive EV lifts the whole frame. Useful range 0.0–2.0
+  — higher is brighter but noisier, and has no effect once the sensor is already
+  gain-saturated (a genuinely lightless scene). Edit `/opt/pi4cam/config.yaml`,
+  `sudo systemctl restart pi4cam`, and watch the `Night exposure bias → EV …`
+  log line confirm it applied. `0` disables the boost.
 - **Never enters grayscale at night?** The AWB may be cancelling the cast more
   aggressively than the thresholds assume. The detector constants live at the
   top of `camera/camera_manager.py` (`IR_CHROMA_STD_MAX`, `IR_CAST_MIN`).
