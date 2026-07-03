@@ -16,6 +16,7 @@ import sys
 import yaml
 
 from .camera_manager import CameraManager
+from .control_server import ControlServer
 from .rtsp_publisher import RtspPublisher
 from .presence_detector import PresenceDetector
 
@@ -55,8 +56,17 @@ def main() -> None:
     detector = PresenceDetector(camera, config)
     detector.start()
 
+    # Localhost-only control endpoint: the HomeKit app drives the encoder
+    # bitrate to what live viewers negotiate (#47).
+    control = ControlServer(
+        int(config.get("camera", {}).get("control_port", 8990)),
+        camera.set_bitrate,
+    )
+    control.start()
+
     def _shutdown(signum, _frame):
         logger.info("Shutting down (signal %d)…", signum)
+        control.stop()
         detector.stop()
         publisher.stop()
         camera.stop()

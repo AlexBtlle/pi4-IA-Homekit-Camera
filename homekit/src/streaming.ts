@@ -13,6 +13,7 @@ import {
   StreamRequestTypes,
 } from "@homebridge/hap-nodejs";
 
+import { BitrateGovernor } from "./bitrate";
 import { SnapshotProvider } from "./snapshot";
 
 interface SessionInfo {
@@ -53,6 +54,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
   constructor(
     private readonly rtspUrl: string,
     private readonly snapshots: SnapshotProvider,
+    private readonly bitrate?: BitrateGovernor,
   ) {}
 
   // ----------------------------------------------------------------------
@@ -134,8 +136,14 @@ export class StreamingDelegate implements CameraStreamingDelegate {
         this.startStream(request, callback);
         break;
       case StreamRequestTypes.RECONFIGURE:
-        // Passthrough copy can't change bitrate/resolution mid-stream; the
-        // source is fixed. Acknowledge so HomeKit keeps the existing stream.
+        // Resolution can't change mid-stream (passthrough), but the bitrate
+        // can: forward the renegotiated cap to the encoder via the governor
+        // — this is how a degrading remote/cellular link gets smooth (#47).
+        console.log(
+          `[stream ${request.sessionID.slice(0, 8)}] reconfigure → ` +
+            `max ${request.video.max_bit_rate} kbps`,
+        );
+        this.bitrate?.setSession(request.sessionID, request.video.max_bit_rate);
         callback();
         break;
       case StreamRequestTypes.STOP:
@@ -157,6 +165,15 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     }
     this.pendingSessions.delete(sessionID);
 
+    // Drive the shared encoder toward what this viewer negotiated — ~2 Mbps
+    // on a remote/cellular link, higher on the LAN (#47).
+    console.log(
+      `[stream ${sessionID.slice(0, 8)}] negotiated ` +
+        `${request.video.width}x${request.video.height}@${request.video.fps} ` +
+        `max ${request.video.max_bit_rate} kbps`,
+    );
+    this.bitrate?.setSession(sessionID, request.video.max_bit_rate);
+
     const mtu = request.video.mtu || 1316;
     const srtpParams = session.videoSRTP.toString("base64");
     const args = [
@@ -177,6 +194,10 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       "0",
       "-probesize",
       "32",
+      // Socket I/O timeout (µs): a hung RTSP source makes ffmpeg exit
+      // instead of leaving a silently frozen live session behind (#34).
+      "-timeout",
+      "10000000",
       "-rtsp_transport",
       "tcp",
       "-i",
@@ -242,5 +263,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       this.ongoingSessions.delete(sessionID);
     }
     this.pendingSessions.delete(sessionID);
+    // Last viewer gone → the governor restores full quality (debounced).
+    this.bitrate?.clearSession(sessionID);
   }
 }

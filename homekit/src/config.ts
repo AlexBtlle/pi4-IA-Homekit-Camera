@@ -16,6 +16,8 @@ export interface AppConfig {
   fps: number;
   qrWebPort: number;
   snapshotPath: string;
+  bitrateKbps: number;
+  cameraControlUrl: string;
 }
 
 /**
@@ -81,6 +83,9 @@ export function loadConfig(): AppConfig {
     fps: Number(camera.fps ?? 30),
     qrWebPort: Number(homekit.qr_web_port ?? 8080),
     snapshotPath: String(camera.snapshot_path ?? "/dev/shm/pi4cam-snapshot.jpg"),
+    // config.yaml stores bitrate in bit/s; the bitrate governor thinks in kbps.
+    bitrateKbps: Math.round(Number(camera.bitrate ?? 4_000_000) / 1000),
+    cameraControlUrl: `http://127.0.0.1:${Number(camera.control_port ?? 8990)}`,
   };
 }
 

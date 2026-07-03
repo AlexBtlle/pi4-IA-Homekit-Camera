@@ -1,3 +1,5 @@
+import ctypes
+import fcntl
 import os
 import queue
 import time
@@ -67,6 +69,7 @@ class CameraManager:
         self._height = int(self._cfg.get("height", 1080))
         self._fps = int(self._cfg.get("fps", 30))
         self._bitrate = int(self._cfg.get("bitrate", 4_000_000))
+        self._current_bitrate = self._bitrate
         self._rotation = int(self._cfg.get("rotation", 0))
         self._lores_w = int(self._cfg.get("lores_width", 320))
         self._lores_h = int(self._cfg.get("lores_height", 240))
@@ -170,6 +173,14 @@ class CameraManager:
         self._picam2.pre_callback = self._lores_callback
 
         self._pipe_r, self._pipe_w = os.pipe()
+        # Enlarge the pipe from the 64 KB default (~65 ms of video at 8 Mbps)
+        # to 1 MB (~1–2 s): short scheduling hiccups of ffmpeg/mediamtx no
+        # longer block the encoder's output thread. Best effort — the kernel
+        # cap (/proc/sys/fs/pipe-max-size, 1 MB by default) may be lower.
+        try:
+            fcntl.fcntl(self._pipe_w, getattr(fcntl, "F_SETPIPE_SZ", 1031), 1 << 20)
+        except OSError:
+            logger.debug("Could not enlarge the H264 pipe", exc_info=True)
         # iperiod = fps → a keyframe every 1 s. Live view (-c:v copy) can only
         # render once it receives a keyframe, so the shortest practical GOP cuts
         # the time-to-first-frame. HKSV still works: the prebuffer fragments on
@@ -199,6 +210,44 @@ class CameraManager:
     def get_h264_read_fd(self) -> int:
         """Return the read-end fd of the H264 pipe. Pass to RtspPublisher."""
         return self._pipe_r
+
+    def set_bitrate(self, bps: int) -> int:
+        """
+        Change the encoder bitrate live — no restart, no keyframe disruption,
+        transparent to every -c:v copy consumer. Gate-tested on the Zero 2 W:
+        the rate control follows within one second (#47).
+
+        Mechanism only: the bitrate *policy* lives in the HomeKit app, which
+        sees the negotiated sessions. Clamped to [500 kbps, configured
+        bitrate]. Returns the bitrate actually in effect.
+        """
+        bps = max(500_000, min(int(bps), self._bitrate))
+        if self._encoder is None:
+            return self._current_bitrate
+        if bps != self._current_bitrate:
+            try:
+                self._apply_bitrate(bps)
+                self._current_bitrate = bps
+                logger.info("Encoder bitrate → %.1f Mbps (live)", bps / 1e6)
+            except OSError:
+                logger.warning("Live bitrate change failed", exc_info=True)
+        return self._current_bitrate
+
+    def _apply_bitrate(self, bps: int) -> None:
+        """V4L2 ext-control poke on the running encoder's fd (VIDIOC_S_EXT_CTRLS).
+
+        Constants come from picamera2's own encoder namespace so we stay in
+        lockstep with whatever V4L2 binding the distro ships."""
+        from picamera2.encoders import v4l2_encoder as v4l2
+
+        ctrl = v4l2.v4l2_ext_control()
+        ctrl.id = v4l2.V4L2_CID_MPEG_VIDEO_BITRATE
+        ctrl.value = bps
+        ctrls = v4l2.v4l2_ext_controls()
+        ctrls.ctrl_class = v4l2.V4L2_CTRL_CLASS_MPEG
+        ctrls.count = 1
+        ctrls.controls = ctypes.pointer(ctrl)
+        fcntl.ioctl(self._encoder.vd, v4l2.VIDIOC_S_EXT_CTRLS, ctrls)
 
     def get_lores_frame(self, timeout: float = 1.0) -> np.ndarray | None:
         """

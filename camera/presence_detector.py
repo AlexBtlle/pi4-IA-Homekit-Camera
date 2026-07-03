@@ -39,8 +39,20 @@ class PresenceDetector:
         motion_port = int(hk_cfg.get("motion_port", 8989))
         self._webhook_url = f"http://localhost:{motion_port}/motion"
 
+        # Episode tracking (#40): during continuous movement the webhook is
+        # re-posted before the Node-side sensor reset (motion_timeout) fires,
+        # so MotionDetected stays active for the WHOLE movement and the HKSV
+        # clip is never truncated mid-action. iOS only notifies on the
+        # inactive→active edge, so refreshing adds zero notifications.
+        motion_timeout = float(hk_cfg.get("motion_timeout", 10))
+        self._refresh_interval = max(1.0, motion_timeout / 2)
+        self._episode_idle = motion_timeout  # no motion this long → episode over
+        self._episode_active = False
+        self._episode_last_motion = 0.0
+        self._episode_end_time: float | None = None
+        self._last_webhook = 0.0
+
         self._stop_event = threading.Event()
-        self._last_trigger = 0.0
 
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="presence-detector"
@@ -82,7 +94,11 @@ class PresenceDetector:
 
         while not self._stop_event.is_set():
             frame = self._camera_manager.get_lores_frame(timeout=1.0)
+            now = time.monotonic()
             if frame is None:
+                # time still passes: let an ongoing episode expire
+                if self._process_motion(False, now):
+                    self._send_webhook()
                 continue
 
             fg_mask = mog2.apply(frame)
@@ -91,16 +107,41 @@ class PresenceDetector:
                 fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
             )
             max_area = max((cv2.contourArea(c) for c in contours), default=0)
-            if max_area < self._min_area:
-                continue
+            if self._process_motion(max_area >= self._min_area, now, int(max_area)):
+                self._send_webhook()
 
-            now = time.monotonic()
-            if now - self._last_trigger < self._cooldown:
-                continue
+    def _process_motion(self, motion: bool, now: float, area: int = 0) -> bool:
+        """
+        Episode state machine (#40). Returns True when a webhook must be sent.
 
-            self._last_trigger = now
-            logger.info("Motion detected — sending webhook (area=%d)", int(max_area))
-            self._send_webhook()
+        - Inside an episode, the webhook is refreshed every _refresh_interval
+          (< motion_timeout) so the HomeKit sensor never resets mid-movement.
+        - An episode ends after _episode_idle without motion; the sensor then
+          resets on the Node side by itself.
+        - cooldown only separates *episodes* — it never truncates one.
+        """
+        if motion:
+            if self._episode_active:
+                self._episode_last_motion = now
+                if now - self._last_webhook >= self._refresh_interval:
+                    self._last_webhook = now
+                    logger.debug("Motion continues — refreshing sensor (area=%d)", area)
+                    return True
+                return False
+            if (self._episode_end_time is not None
+                    and now - self._episode_end_time < self._cooldown):
+                return False  # between episodes: cooling down
+            self._episode_active = True
+            self._episode_last_motion = now
+            self._last_webhook = now
+            logger.info("Motion episode started (area=%d)", area)
+            return True
+        if (self._episode_active
+                and now - self._episode_last_motion >= self._episode_idle):
+            self._episode_active = False
+            self._episode_end_time = self._episode_last_motion
+            logger.info("Motion episode ended")
+        return False
 
     # ------------------------------------------------------------------
     # Webhook

@@ -18,8 +18,10 @@ Le projet tourne sur un **Pi Zero 2 W**. Garde toujours ces contraintes en tête
 
 - 4× Cortex-A53 @ 1 GHz, **512 Mo de RAM partagés avec le GPU**, pas de
   dissipateur (75-78 °C en charge).
-- Encodeur H264 VideoCore IV **limité à 1920×1080**. Mettre `width > 1920`
-  (ex. OV5647 en 2592×1944) fait planter `VIDIOC_STREAMON`.
+- Encodeur H264 matériel **limité à 1920×1080 sur TOUS les Pi** — VideoCore IV
+  (Zero 2 W/Pi 3) comme VideoCore VI (Pi 4). Mettre `width > 1920` fait planter
+  `VIDIOC_STREAMON` (testé : OV5647 2592×1944 sur Zero 2 W, IMX708 2304×1296
+  sur Pi 4). Ne jamais recommander de 2K/4K.
 - Pas de calcul lourd, attention à la charge CPU et à la mémoire.
 - **Ne jamais appeler `capture_array("main")` hors du thread caméra** pendant
   que l'encodeur H264 tourne : contention des buffers picamera2 → pic de charge

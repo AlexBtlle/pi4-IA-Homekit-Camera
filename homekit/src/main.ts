@@ -22,6 +22,7 @@ import {
   VideoCodecType,
 } from "@homebridge/hap-nodejs";
 
+import { BitrateGovernor } from "./bitrate";
 import { homekitDir, loadConfig, loadPairing } from "./config";
 import { SnapshotProvider } from "./snapshot";
 import { StreamingDelegate } from "./streaming";
@@ -50,13 +51,32 @@ function main(): void {
     .setCharacteristic(Characteristic.FirmwareRevision, "1.4.0");
 
   const snapshots = new SnapshotProvider(config.snapshotPath);
-  const streamingDelegate = new StreamingDelegate(config.rtspUrl, snapshots);
+  // Dynamic bitrate (#47): drive the camera's encoder toward what live
+  // viewers negotiate, back to full quality when they leave. Best effort —
+  // an unreachable camera service must never break streaming itself.
+  const bitrateGovernor = new BitrateGovernor((kbps) => {
+    fetch(`${config.cameraControlUrl}/bitrate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kbps }),
+    }).then(
+      () => console.log(`[bitrate] encoder → ${kbps} kbps`),
+      (e) => console.error("[bitrate] control endpoint unreachable:", e.message),
+    );
+  }, config.bitrateKbps);
+  const streamingDelegate = new StreamingDelegate(
+    config.rtspUrl,
+    snapshots,
+    bitrateGovernor,
+  );
   const recordingDelegate = new RecordingDelegate(config.rtspUrl);
 
   // Standard resolutions in descending order. Only those at or below the
   // configured native resolution are advertised — with -c:v copy the stream
   // is always at native res; HomeKit scales the live view on its side.
-  // A Pi 4 configured at 4K will automatically advertise 4K, 2K, 1080p…
+  // In practice the list caps at 1080p: no current Pi can hardware-encode
+  // H264 above 1920×1080 (VideoCore IV and VI alike, field-tested). The
+  // higher entries only matter if that ceiling ever lifts.
   const STANDARD_RESOLUTIONS: [number, number][] = [
     [3840, 2160], // 4K UHD
     [2560, 1440], // 2K QHD
