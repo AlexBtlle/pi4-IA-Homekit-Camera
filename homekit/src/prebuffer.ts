@@ -140,11 +140,9 @@ export class Prebuffer {
       "-hide_banner",
       "-loglevel",
       "error",
-      // Socket I/O timeout (µs) for the RTSP input — best effort (the rtsp
-      // muxer ignored -rw_timeout on the publisher; the checkStale watchdog
-      // above is the real guarantee).
-      "-timeout",
-      "10000000",
+      // NO "-timeout" here: field-measured, it adds 2-4 s to the RTSP
+      // connection setup (#43). The checkStale watchdog above is the real
+      // zombie protection (#34).
       "-rtsp_transport",
       "tcp",
       "-i",
