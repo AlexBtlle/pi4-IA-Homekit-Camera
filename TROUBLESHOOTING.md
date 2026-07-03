@@ -167,9 +167,11 @@ or `mediamtx`), not HomeKit — check their logs.
 Symptom: `pi4cam` loops on restart, with `ProcessLookupError` or a
 `VIDIOC_STREAMON` failure in `journalctl -u pi4cam`.
 
-**Cause #1: resolution too high.** The VideoCore H264 encoder cannot exceed
-**1920×1080**. Setting `camera.width` above 1920 (e.g. a sensor's native
-2592×1944) crashes `VIDIOC_STREAMON`.
+**Cause #1: resolution too high.** The hardware H264 encoder cannot exceed
+**1920×1080 on any Pi model** — VideoCore IV (Zero 2 W, Pi 3) and VideoCore VI
+(Pi 4) alike. Setting `camera.width` above 1920 crashes `VIDIOC_STREAMON`
+(field-tested: OV5647 at 2592×1944 on a Zero 2 W, IMX708 at 2304×1296 on a
+Pi 4 — same `ProcessLookupError`).
 
 **Fix:** keep `width`/`height` at or below 1920×1080. See the recommended
 resolutions per camera module documented at the top of

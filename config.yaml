@@ -7,28 +7,27 @@
 #   Pi 3 B/B+    │ bitrate: 6000000 │ snapshot_interval: 3 │ analysis_fps: 8
 #   Pi 4         │ bitrate: 8000000 │ snapshot_interval: 2 │ analysis_fps: 10
 #
-# Recommended resolution by camera module:
+# ⚠ Hard limit on ALL Pi models: the hardware H264 encoder tops out at
+#   1920×1080 — VideoCore IV (Zero 2 W / Pi 3) AND VideoCore VI (Pi 4) alike.
+#   Any width above 1920 crashes VIDIOC_STREAMON (field-tested: OV5647 at
+#   2592×1944 on a Zero 2 W, IMX708 at 2304×1296 on a Pi 4). The sensors can
+#   capture more; the encoder cannot encode it. Stay at 1920×1080 and let
+#   full_fov preserve the lens angle.
+#
+# Recommended resolution by camera module (all: width 1920, height 1080, fps 30):
 #
 #   Camera Module v1 (OV5647)
-#     width: 1920  height: 1080  fps: 30
 #     full_fov: true  → libcamera selects 1296×972 (full-sensor 2×2 binned),
 #                        ISP upscales to 1920×1080 — full lens angle preserved.
-#     ⚠ Do NOT set width above 1920 — the H264 encoder on Pi Zero 2 W cannot
-#       handle the sensor's native 2592×1944 and will crash on VIDIOC_STREAMON.
 #
 #   Camera Module v2 (IMX219)
-#     width: 1920  height: 1080  fps: 30
 #     full_fov: true  → libcamera selects 1640×1232 (2×2 binned, full FOV),
 #                        ISP downscales to 1920×1080.
 #
-#   Camera Module 3 (IMX708) — Pi 4 recommended
-#     1080p  : width: 1920  height: 1080  fps: 30  bitrate: 8000000
-#              full_fov: true → libcamera selects 2304×1296 (2×2 binned),
-#                               ISP downscales to 1920×1080.
-#     2K     : width: 2304  height: 1296  fps: 30  bitrate: 12000000
-#              full_fov: true → libcamera selects 2304×1296 natively (1:1).
-#     ⚠ 4K (4608×2592) is limited to 14 fps by the sensor — not suitable
-#       for live streaming. Use 2K until HomeKit adds 4K support.
+#   Camera Module 3 (IMX708, incl. Wide / NoIR variants)
+#     full_fov: true  → libcamera selects 2304×1296 (2×2 binned, full FOV),
+#                        ISP downscales to 1920×1080 — the Wide keeps its
+#                        full angle.
 # ──────────────────────────────────────────────────────────────────────────────
 
 camera:

@@ -56,7 +56,9 @@ function main(): void {
   // Standard resolutions in descending order. Only those at or below the
   // configured native resolution are advertised — with -c:v copy the stream
   // is always at native res; HomeKit scales the live view on its side.
-  // A Pi 4 configured at 4K will automatically advertise 4K, 2K, 1080p…
+  // In practice the list caps at 1080p: no current Pi can hardware-encode
+  // H264 above 1920×1080 (VideoCore IV and VI alike, field-tested). The
+  // higher entries only matter if that ceiling ever lifts.
   const STANDARD_RESOLUTIONS: [number, number][] = [
     [3840, 2160], // 4K UHD
     [2560, 1440], // 2K QHD
