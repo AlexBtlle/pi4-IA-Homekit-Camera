@@ -231,14 +231,18 @@ stops car headlights from flipping the mode at night).
 
 - **Transitions logged**: look for `Night vision detected → grayscale stream` /
   `Daylight detected → colour stream` in `journalctl -u pi4cam`.
-- **Image too dark at night?** Raise `camera.ir_exposure` — an ExposureValue/EV
-  bias applied *only* while night mode is latched (`+1` = 2× brighter target,
-  `+2` = 4×). IR-lit rooms tend to meter dark because bright windows drag the
-  auto-exposure down; a positive EV lifts the whole frame. Useful range 0.0–2.0
-  — higher is brighter but noisier, and has no effect once the sensor is already
-  gain-saturated (a genuinely lightless scene). Edit `/opt/pi4cam/config.yaml`,
-  `sudo systemctl restart pi4cam`, and watch the `Night exposure bias → EV …`
-  log line confirm it applied. `0` disables the boost.
+- **Image too dark at night?** The real lever is `camera.ir_min_fps`, not
+  `ir_exposure`. At the configured fps (e.g. 30) libcamera caps the night
+  exposure at ~1/fps s and the auto-exposure can then only add gain — so once
+  the sensor is gain-saturated (the usual night case), raising `ir_exposure`
+  alone does *nothing* (field-confirmed: EV +8 gave zero change). Lowering
+  `ir_min_fps` lets the framerate drop when it's dark, lengthening the exposure
+  instead (`10` → ~1/10 s → up to 3× more light) with **no added noise**. Cost:
+  lower night framerate (motion blur) and a longer keyframe interval. Then
+  `ir_exposure` (an ExposureValue/EV bias, `+1` = 2× target) fine-tunes on top,
+  now that the shutter has headroom. Edit `/opt/pi4cam/config.yaml`,
+  `sudo systemctl restart pi4cam`, and watch the `Night camera tuning on → …`
+  log line confirm it applied. Set `ir_min_fps` >= `fps` to disable.
 - **Never enters grayscale at night?** The AWB may be cancelling the cast more
   aggressively than the thresholds assume. The detector constants live at the
   top of `camera/camera_manager.py` (`IR_CHROMA_STD_MAX`, `IR_CAST_MIN`).

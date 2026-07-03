@@ -52,6 +52,11 @@ class CameraManager:
     # Exit is slower than entry so car headlights at night can't flip us back.
     IR_ENTRY_FRAMES = 15      # ≈3 s at 5 fps before switching to grayscale
     IR_EXIT_FRAMES = 50       # ≈10 s at 5 fps before returning to colour
+    # AeExposureMode enum (libcamera): biases the AE shutter/gain split. Night
+    # mode uses Long so the budget freed by a relaxed FrameDurationLimits is
+    # spent on shutter time (real light) before analogue gain (noise).
+    _AE_EXPOSURE_NORMAL = 0
+    _AE_EXPOSURE_LONG = 2
 
     _instance = None
     _instance_lock = threading.Lock()
@@ -92,12 +97,19 @@ class CameraManager:
         self._ir_last_stats_log = 0.0
         self._MappedArray = None  # picamera2.MappedArray, bound in start()
 
-        # Night exposure bias (ExposureValue, in EV/stops): raises the auto-
-        # exposure target ONLY while night mode is latched, reverting to 0 in
-        # daylight. IR-lit rooms are metered dark (bright windows pull the AEC
-        # down); a positive EV lifts the whole frame. 0.0 = libcamera default,
-        # so existing installs are untouched. Clamped to libcamera's ±8 range.
+        # Night brightness — two live controls, applied only while night mode
+        # is latched and reverted by day (see _apply_night_camera):
+        #
+        #  • ir_min_fps  — the REAL lever. At fps (e.g. 30) libcamera pins the
+        #    max exposure to ~1/fps s and the AEC just piles on gain, so an EV
+        #    bias saturates with no effect. Letting the framerate drop to this
+        #    floor when dark lengthens the exposure instead (10 fps → 100 ms →
+        #    ~3× more light) with NO added noise. < fps enables it; >= fps off.
+        #  • ir_exposure — ExposureValue target bias in EV/stops (secondary
+        #    fine-tune; only bites once ir_min_fps has freed shutter headroom).
+        #    0.0 = libcamera default. Clamped to libcamera's ±8 range.
         self._ir_exposure = max(-8.0, min(8.0, float(self._cfg.get("ir_exposure", 0.0))))
+        self._ir_min_fps = max(1, int(self._cfg.get("ir_min_fps", 10)))
 
         self._picam2 = None
         self._encoder = None
@@ -290,26 +302,42 @@ class CameraManager:
         ctrls.controls = ctypes.pointer(ctrl)
         fcntl.ioctl(self._encoder.vd, v4l2.VIDIOC_S_EXT_CTRLS, ctrls)
 
-    def _apply_ir_exposure(self, on: bool) -> None:
-        """Bias the auto-exposure target while night mode is active.
+    def _apply_night_camera(self, on: bool) -> None:
+        """Retune the sensor for night, reverting to daylight defaults by day.
 
-        ExposureValue is a live libcamera control (log2 stops: EV +1 → 2× the
-        AEC's brightness target) applied via set_controls — no reconfigure, no
-        encoder disruption, and the ISP Saturation is never touched. Fired once
-        per day↔night transition from _apply_ir_vote, never per frame.
+        Live libcamera controls applied in one poke, only on the day↔night
+        transition (never per frame) — no reconfigure, and the ISP Saturation
+        is never touched:
 
-        Inert when ir_exposure is 0.0, so a default install behaves exactly as
-        before. None-guarded and wrapped so a rejected control (some sensors may
-        not expose it) never kills the capture thread.
+        - FrameDurationLimits: relax the max frame duration so the sensor may
+          slow to ir_min_fps when it's dark, lifting the ~1/fps s shutter cap
+          that makes ExposureValue saturate. This is what actually adds photons,
+          and it adds no gain-noise. Paired with AeExposureMode=Long so the AEC
+          spends that budget on shutter time before analogue gain.
+        - ExposureValue: bias the AE target up (only useful once the relaxed
+          shutter ceiling gives the AEC room to reach it).
+
+        Each knob is skipped when its config leaves it at the daylight default,
+        so a plain install is untouched. None-guarded and wrapped so a rejected
+        control can't kill the capture thread.
         """
-        if self._ir_exposure == 0.0 or self._picam2 is None:
+        if self._picam2 is None:
             return
-        ev = self._ir_exposure if on else 0.0
+        controls: dict = {}
+        if self._ir_min_fps < self._fps:
+            day_us = round(1e6 / self._fps)
+            night_us = round(1e6 / self._ir_min_fps)
+            controls["FrameDurationLimits"] = (day_us, night_us) if on else (day_us, day_us)
+            controls["AeExposureMode"] = self._AE_EXPOSURE_LONG if on else self._AE_EXPOSURE_NORMAL
+        if self._ir_exposure != 0.0:
+            controls["ExposureValue"] = self._ir_exposure if on else 0.0
+        if not controls:
+            return
         try:
-            self._picam2.set_controls({"ExposureValue": ev})
-            logger.info("Night exposure bias → EV %+.1f", ev)
+            self._picam2.set_controls(controls)
+            logger.info("Night camera tuning %s → %s", "on" if on else "off", controls)
         except Exception:
-            logger.warning("ExposureValue control rejected", exc_info=True)
+            logger.warning("Night camera control rejected", exc_info=True)
 
     def get_lores_frame(self, timeout: float = 1.0) -> np.ndarray | None:
         """
@@ -505,7 +533,7 @@ class CameraManager:
                 logger.info("Night vision detected → grayscale stream")
             else:
                 logger.info("Daylight detected → colour stream")
-            self._apply_ir_exposure(is_ir)
+            self._apply_night_camera(is_ir)
 
     def _snapshot_worker(self) -> None:
         """Persistent worker: encodes and writes JPEG snapshots from the queue."""

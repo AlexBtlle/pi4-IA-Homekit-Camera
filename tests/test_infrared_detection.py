@@ -171,11 +171,11 @@ def test_matching_votes_keep_streak_reset():
 
 
 # ----------------------------------------------------------------------
-# Night exposure bias (_apply_ir_exposure, driven by _apply_ir_vote)
+# Night camera tuning (_apply_night_camera, driven by _apply_ir_vote)
 # ----------------------------------------------------------------------
 
 class FakePicam2:
-    """Records set_controls calls so tests can assert the EV bias without hardware."""
+    """Records set_controls calls so tests can assert the night tuning."""
 
     def __init__(self):
         self.controls_log = []
@@ -184,51 +184,83 @@ class FakePicam2:
         self.controls_log.append(dict(controls))
 
 
-def make_night_manager(ev):
-    cam = CameraManager({"camera": {"ir_grayscale": True, "ir_exposure": ev}})
+def make_night_manager(**camera):
+    # fps defaults to 30 here, so ir_min_fps=10 (< 30) enables the shutter lever.
+    cam = CameraManager({"camera": {"ir_grayscale": True, **camera}})
     cam._picam2 = FakePicam2()
     return cam
 
 
-def test_ir_exposure_read_and_clamped():
-    assert CameraManager({"camera": {}})._ir_exposure == 0.0
-    assert CameraManager({"camera": {"ir_exposure": 1.5}})._ir_exposure == 1.5
-    # clamped to libcamera's ±8 EV range
+LONG = CameraManager._AE_EXPOSURE_LONG
+NORMAL = CameraManager._AE_EXPOSURE_NORMAL
+
+
+def test_config_read_and_clamped():
+    d = CameraManager({"camera": {}})
+    assert d._ir_exposure == 0.0
+    assert d._ir_min_fps == 10                       # default
+    c = CameraManager({"camera": {"ir_exposure": 1.5, "ir_min_fps": 8}})
+    assert c._ir_exposure == 1.5 and c._ir_min_fps == 8
+    # EV clamped to libcamera's ±8 range; fps floored to >= 1
     assert CameraManager({"camera": {"ir_exposure": 99}})._ir_exposure == 8.0
     assert CameraManager({"camera": {"ir_exposure": -99}})._ir_exposure == -8.0
+    assert CameraManager({"camera": {"ir_min_fps": 0}})._ir_min_fps == 1
 
 
-def test_night_transition_applies_and_reverts_bias():
-    cam = make_night_manager(1.5)
+def test_night_transition_relaxes_shutter_and_reverts():
+    cam = make_night_manager(ir_min_fps=10, ir_exposure=1.5)
     for _ in range(ENTRY):          # latch into night
         cam._apply_ir_vote(True)
     assert cam._ir_mode is True
-    assert cam._picam2.controls_log[-1] == {"ExposureValue": 1.5}
+    on = cam._picam2.controls_log[-1]
+    assert on["FrameDurationLimits"] == (33333, 100000)   # 30 fps min .. 10 fps max
+    assert on["AeExposureMode"] == LONG
+    assert on["ExposureValue"] == 1.5
     for _ in range(EXIT):           # return to day
         cam._apply_ir_vote(False)
     assert cam._ir_mode is False
-    assert cam._picam2.controls_log[-1] == {"ExposureValue": 0.0}
+    off = cam._picam2.controls_log[-1]
+    assert off["FrameDurationLimits"] == (33333, 33333)   # re-pinned to 30 fps
+    assert off["AeExposureMode"] == NORMAL
+    assert off["ExposureValue"] == 0.0
 
 
-def test_bias_fires_once_per_transition_not_per_frame():
-    cam = make_night_manager(1.0)
+def test_tuning_fires_once_per_transition_not_per_frame():
+    cam = make_night_manager(ir_min_fps=10)
     for _ in range(ENTRY + 20):     # keep voting night well past the latch
         cam._apply_ir_vote(True)
-    # exactly one control write for the single day→night flip
-    assert cam._picam2.controls_log == [{"ExposureValue": 1.0}]
+    assert len(cam._picam2.controls_log) == 1   # one write for the single flip
 
 
-def test_zero_exposure_never_touches_controls():
-    # Default (ir_exposure=0.0) → mechanism inert, existing behaviour preserved.
-    cam = make_night_manager(0.0)
+def test_ev_only_when_shutter_lever_disabled():
+    # ir_min_fps >= fps disables the shutter lever; only the EV bias remains.
+    cam = make_night_manager(ir_min_fps=30, ir_exposure=1.0)
+    for _ in range(ENTRY):
+        cam._apply_ir_vote(True)
+    assert cam._picam2.controls_log[-1] == {"ExposureValue": 1.0}
+
+
+def test_shutter_only_when_no_ev():
+    cam = make_night_manager(ir_min_fps=10, ir_exposure=0.0)
+    for _ in range(ENTRY):
+        cam._apply_ir_vote(True)
+    on = cam._picam2.controls_log[-1]
+    assert "ExposureValue" not in on
+    assert on["FrameDurationLimits"] == (33333, 100000)
+    assert on["AeExposureMode"] == LONG
+
+
+def test_fully_disabled_never_touches_controls():
+    # Shutter lever off AND no EV → nothing at all, existing behaviour preserved.
+    cam = make_night_manager(ir_min_fps=30, ir_exposure=0.0)
     for _ in range(ENTRY):
         cam._apply_ir_vote(True)
     assert cam._ir_mode is True
     assert cam._picam2.controls_log == []
 
 
-def test_apply_ir_exposure_without_camera_is_noop():
+def test_apply_night_camera_without_camera_is_noop():
     # tests/hardware-less construction leaves _picam2 = None → must not raise
-    cam = CameraManager({"camera": {"ir_grayscale": True, "ir_exposure": 2.0}})
+    cam = CameraManager({"camera": {"ir_grayscale": True, "ir_min_fps": 10, "ir_exposure": 2.0}})
     assert cam._picam2 is None
-    cam._apply_ir_exposure(True)   # no crash, no effect
+    cam._apply_night_camera(True)   # no crash, no effect
