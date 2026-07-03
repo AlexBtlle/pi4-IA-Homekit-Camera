@@ -75,8 +75,15 @@ export class Prebuffer {
   private running = false;
   private restartTimer?: NodeJS.Timeout;
   private restartDelay = 1000;
+  private staleTimer?: NodeJS.Timeout;
+  private lastActivity = 0;
 
   private static readonly RETAIN_MS = 6000;
+  // ffmpeg alive but no stdout bytes for this long → hung RTSP session. The
+  // 'close' handler only covers an ffmpeg that *exits*; field-tested on the
+  // Python publisher, a SIGSTOPped mediamtx leaves ffmpeg blocked forever.
+  // Generous enough for a cold spawn (handshake + first keyframe).
+  private static readonly STALE_MS = 10_000;
 
   constructor(private readonly rtspUrl: string) {}
 
@@ -85,6 +92,9 @@ export class Prebuffer {
       return;
     }
     this.running = true;
+    // Zombie watchdog: a silent-but-alive ffmpeg would otherwise starve HKSV
+    // without a single log line.
+    this.staleTimer = setInterval(() => this.checkStale(), 2_000);
     this.spawn();
   }
 
@@ -94,9 +104,28 @@ export class Prebuffer {
       clearTimeout(this.restartTimer);
       this.restartTimer = undefined;
     }
+    if (this.staleTimer) {
+      clearInterval(this.staleTimer);
+      this.staleTimer = undefined;
+    }
     this.ff?.kill("SIGKILL");
     this.ff = undefined;
     this.resetParseState();
+  }
+
+  /** Kill an ffmpeg that is alive but producing nothing (hung transport). */
+  private checkStale(): void {
+    if (!this.running || !this.ff) {
+      return; // stopped, or between restarts
+    }
+    const silentMs = performance.now() - this.lastActivity;
+    if (silentMs < Prebuffer.STALE_MS) {
+      return;
+    }
+    console.error(
+      `[prebuffer] ffmpeg alive but silent for ${Math.round(silentMs / 1000)}s — killing it`,
+    );
+    this.ff.kill("SIGKILL"); // 'close' fires → parse reset + backoff respawn
   }
 
   // --------------------------------------------------------------------
@@ -111,6 +140,11 @@ export class Prebuffer {
       "-hide_banner",
       "-loglevel",
       "error",
+      // Socket I/O timeout (µs) for the RTSP input — best effort (the rtsp
+      // muxer ignored -rw_timeout on the publisher; the checkStale watchdog
+      // above is the real guarantee).
+      "-timeout",
+      "10000000",
       "-rtsp_transport",
       "tcp",
       "-i",
@@ -144,8 +178,10 @@ export class Prebuffer {
 
     const ff = spawn("ffmpeg", args);
     this.ff = ff;
+    this.lastActivity = performance.now(); // spawn counts as activity
 
     ff.stdout.on("data", (chunk: Buffer) => {
+      this.lastActivity = performance.now();
       for (const box of this.parser.push(chunk)) {
         this.onBox(box.type, box.data);
       }

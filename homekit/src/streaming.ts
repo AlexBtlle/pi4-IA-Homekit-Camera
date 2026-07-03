@@ -177,6 +177,10 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       "0",
       "-probesize",
       "32",
+      // Socket I/O timeout (µs): a hung RTSP source makes ffmpeg exit
+      // instead of leaving a silently frozen live session behind (#34).
+      "-timeout",
+      "10000000",
       "-rtsp_transport",
       "tcp",
       "-i",
