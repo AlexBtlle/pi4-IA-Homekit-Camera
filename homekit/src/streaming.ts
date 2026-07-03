@@ -139,6 +139,10 @@ export class StreamingDelegate implements CameraStreamingDelegate {
         // Resolution can't change mid-stream (passthrough), but the bitrate
         // can: forward the renegotiated cap to the encoder via the governor
         // — this is how a degrading remote/cellular link gets smooth (#47).
+        console.log(
+          `[stream ${request.sessionID.slice(0, 8)}] reconfigure → ` +
+            `max ${request.video.max_bit_rate} kbps`,
+        );
         this.bitrate?.setSession(request.sessionID, request.video.max_bit_rate);
         callback();
         break;
@@ -163,6 +167,11 @@ export class StreamingDelegate implements CameraStreamingDelegate {
 
     // Drive the shared encoder toward what this viewer negotiated — ~2 Mbps
     // on a remote/cellular link, higher on the LAN (#47).
+    console.log(
+      `[stream ${sessionID.slice(0, 8)}] negotiated ` +
+        `${request.video.width}x${request.video.height}@${request.video.fps} ` +
+        `max ${request.video.max_bit_rate} kbps`,
+    );
     this.bitrate?.setSession(sessionID, request.video.max_bit_rate);
 
     const mtu = request.video.mtu || 1316;
