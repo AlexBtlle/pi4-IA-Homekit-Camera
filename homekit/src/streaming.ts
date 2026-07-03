@@ -55,6 +55,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     private readonly rtspUrl: string,
     private readonly snapshots: SnapshotProvider,
     private readonly bitrate?: BitrateGovernor,
+    private readonly forceKeyframe?: () => void,
   ) {}
 
   // ----------------------------------------------------------------------
@@ -180,9 +181,6 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       "-hide_banner",
       "-loglevel",
       "error",
-      // Program-friendly progress on stdout → we know when frames start flowing.
-      "-progress",
-      "pipe:1",
       // Low-latency input: mediamtx's RTSP SDP carries the H264 codec params,
       // so ffmpeg needs almost no probing — start copying at the first keyframe
       // instead of buffering/analysing for up to 5 s.
@@ -224,31 +222,27 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     const ff = spawn("ffmpeg", args);
     this.ongoingSessions.set(sessionID, ff);
 
-    let started = false;
-    const ready = () => {
-      if (!started) {
-        started = true;
-        callback();
-      }
-    };
-    // ffmpeg writes progress lines once frames flow → the stream is live.
-    ff.stdout.on("data", ready);
-    // Fallback: if no progress arrives quickly, ack anyway so HomeKit proceeds.
-    const readyTimer = setTimeout(ready, 1500);
+    // Ack the START immediately: iOS shows its spinner until SRTP packets
+    // arrive regardless — the old wait-for-progress (with a 1.5 s fallback
+    // that fired on nearly every cold start) only delayed the moment iOS
+    // starts listening (#43, audit L2).
+    callback();
+
+    // The instant-startup trick (#43): ask the encoder for an immediate IDR
+    // instead of letting the viewer wait out the GOP. Twice: now (fast
+    // spawns) and after 1 s (cold ffmpeg spawns on the Zero 2 W) — an extra
+    // keyframe is a ~100 KB one-off, invisible.
+    this.forceKeyframe?.();
+    const keyframeAgain = setTimeout(() => this.forceKeyframe?.(), 1000);
 
     ff.stderr.on("data", (d: Buffer) =>
       console.error(`[stream ${sessionID.slice(0, 8)}] ${d.toString().trim()}`),
     );
-    ff.on("error", (e) => {
-      console.error("[stream] ffmpeg spawn error:", e.message);
-      clearTimeout(readyTimer);
-      if (!started) {
-        started = true;
-        callback(e);
-      }
-    });
+    ff.on("error", (e) =>
+      console.error("[stream] ffmpeg spawn error:", e.message),
+    );
     ff.on("close", (code) => {
-      clearTimeout(readyTimer);
+      clearTimeout(keyframeAgain);
       this.ongoingSessions.delete(sessionID);
       if (code !== 0 && code !== null) {
         console.error(`[stream ${sessionID.slice(0, 8)}] ffmpeg exited ${code}`);

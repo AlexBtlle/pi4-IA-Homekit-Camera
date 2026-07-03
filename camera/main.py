@@ -57,10 +57,12 @@ def main() -> None:
     detector.start()
 
     # Localhost-only control endpoint: the HomeKit app drives the encoder
-    # bitrate to what live viewers negotiate (#47).
+    # bitrate to what live viewers negotiate (#47) and requests an immediate
+    # keyframe when a live session starts (#43).
     control = ControlServer(
         int(config.get("camera", {}).get("control_port", 8990)),
         camera.set_bitrate,
+        camera.force_keyframe,
     )
     control.start()
 

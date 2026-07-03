@@ -233,6 +233,40 @@ class CameraManager:
                 logger.warning("Live bitrate change failed", exc_info=True)
         return self._current_bitrate
 
+    def force_keyframe(self) -> bool:
+        """
+        Ask the encoder for an immediate IDR frame (live session startup).
+
+        A -c:v copy consumer can only render from a keyframe: forcing one when
+        a viewer connects removes the 0–1 s GOP wait — the trick commercial
+        cameras use for their instant startup (#43). Returns True if the
+        control was accepted.
+        """
+        if self._encoder is None:
+            return False
+        try:
+            self._apply_force_keyframe()
+            logger.info("Keyframe forced (live session start)")
+            return True
+        except OSError:
+            logger.warning("Force-keyframe control rejected", exc_info=True)
+            return False
+
+    def _apply_force_keyframe(self) -> None:
+        from picamera2.encoders import v4l2_encoder as v4l2
+
+        # Fallback CID if the distro's binding doesn't name it:
+        # V4L2_CTRL_CLASS_MPEG | 0x900 base + 229.
+        cid = getattr(v4l2, "V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME", 0x009909E5)
+        ctrl = v4l2.v4l2_ext_control()
+        ctrl.id = cid
+        ctrl.value = 1
+        ctrls = v4l2.v4l2_ext_controls()
+        ctrls.ctrl_class = v4l2.V4L2_CTRL_CLASS_MPEG
+        ctrls.count = 1
+        ctrls.controls = ctypes.pointer(ctrl)
+        fcntl.ioctl(self._encoder.vd, v4l2.VIDIOC_S_EXT_CTRLS, ctrls)
+
     def _apply_bitrate(self, bps: int) -> None:
         """V4L2 ext-control poke on the running encoder's fd (VIDIOC_S_EXT_CTRLS).
 

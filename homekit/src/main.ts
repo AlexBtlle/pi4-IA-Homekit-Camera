@@ -64,10 +64,18 @@ function main(): void {
       (e) => console.error("[bitrate] control endpoint unreachable:", e.message),
     );
   }, config.bitrateKbps);
+  // Instant startup (#43): ask the camera for an immediate keyframe when a
+  // live session opens, instead of waiting out the GOP.
+  const forceKeyframe = () => {
+    fetch(`${config.cameraControlUrl}/keyframe`, { method: "POST" }).catch(
+      (e) => console.error("[stream] keyframe request failed:", e.message),
+    );
+  };
   const streamingDelegate = new StreamingDelegate(
     config.rtspUrl,
     snapshots,
     bitrateGovernor,
+    forceKeyframe,
   );
   const recordingDelegate = new RecordingDelegate(config.rtspUrl);
 
