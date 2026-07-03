@@ -1,0 +1,9 @@
+[Unit]
+Description=pi4cam — keep ffmpeg and its libraries warm in the page cache
+
+[Service]
+Type=oneshot
+# Soft touch (NO locking): pages stay evictable if the kernel truly needs the
+# RAM — this only biases the LRU so a live-view ffmpeg spawn does not reload
+# ~60 MB from the SD card. Measured on a Pi Zero 2 W: cold spawn 5.1 s → 1.7 s.
+ExecStart=/bin/sh -c 'vmtouch -tq $(readlink -f /usr/bin/ffmpeg /usr/lib/*/libav*.so.*) >/dev/null 2>&1 || true'

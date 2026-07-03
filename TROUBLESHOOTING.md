@@ -134,11 +134,14 @@ the wait for the next keyframe plus `ffmpeg` startup.
 - **GOP / keyframe.** The encoder emits a keyframe every 1 s (`iperiod = fps` in
   `camera_manager.py`). Shorter GOP = faster first frame; don't raise it without
   reason (it lengthens the time-to-first-frame).
-- **Cold vs warm start.** The *first* live view after an idle period is slower
-  (~5 s) than an immediate re-open (~2 s). When HKSV isn't armed, no `ffmpeg`
-  runs, so its libraries are cold-loaded from the SD card on first launch. When
-  HKSV *is* armed (you're away), the prebuffer `ffmpeg` runs continuously →
-  libraries stay warm → the live view is fast. This is expected.
+- **Cold vs warm start.** Spawning the live-view `ffmpeg` costs ~1.7 s of pure
+  CPU (dynamic linking at 1 GHz) plus, when the page cache went cold, ~3.4 s of
+  SD reloads (measured on a Zero 2 W: `time ffmpeg -version` 5.1 s cold, 1.7 s
+  hot). The install ships **`pi4cam-warm.timer`** — a soft `vmtouch` every
+  10 min that keeps ffmpeg's libraries cached (pages stay evictable) — so cold
+  starts behave like warm ones. On session start the app also **forces
+  encoder keyframes** (salvo over the first 3 s) so the viewer never waits out
+  the GOP once ffmpeg is connected.
 
 Diagnose the cold-start theory (optional):
 
@@ -148,8 +151,9 @@ vmtouch -v $(readlink -f /usr/bin/ffmpeg /usr/lib/aarch64-linux-gnu/libav*.so.*)
 # open the live view once, then re-run: residency should jump toward 100%
 ```
 
-Locking the libraries in RAM (`vmtouch -l`) would remove the cold start but costs
-tens of MB of RAM on a 512 MB board — not recommended on the Zero 2 W.
+Hard-locking the libraries in RAM (`vmtouch -l`) is still not recommended on a
+512 MB board — the shipped timer uses a soft touch precisely so the kernel can
+reclaim those pages whenever it genuinely needs them.
 
 **If the stream never appears at all:**
 

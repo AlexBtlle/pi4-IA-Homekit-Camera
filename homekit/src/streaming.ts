@@ -229,11 +229,14 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     callback();
 
     // The instant-startup trick (#43): ask the encoder for an immediate IDR
-    // instead of letting the viewer wait out the GOP. Twice: now (fast
-    // spawns) and after 1 s (cold ffmpeg spawns on the Zero 2 W) — an extra
+    // instead of letting the viewer wait out the GOP. A salvo, because the
+    // keyframe only helps once OUR ffmpeg is subscribed to mediamtx — and its
+    // spawn takes ~1.7 s warm (up to ~5 s cold) on a Zero 2 W. Each extra
     // keyframe is a ~100 KB one-off, invisible.
     this.forceKeyframe?.();
-    const keyframeAgain = setTimeout(() => this.forceKeyframe?.(), 1000);
+    const keyframeSalvo = [1000, 2000, 3000].map((ms) =>
+      setTimeout(() => this.forceKeyframe?.(), ms),
+    );
 
     ff.stderr.on("data", (d: Buffer) =>
       console.error(`[stream ${sessionID.slice(0, 8)}] ${d.toString().trim()}`),
@@ -242,7 +245,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       console.error("[stream] ffmpeg spawn error:", e.message),
     );
     ff.on("close", (code) => {
-      clearTimeout(keyframeAgain);
+      keyframeSalvo.forEach(clearTimeout);
       this.ongoingSessions.delete(sessionID);
       if (code !== 0 && code !== null) {
         console.error(`[stream ${sessionID.slice(0, 8)}] ffmpeg exited ${code}`);

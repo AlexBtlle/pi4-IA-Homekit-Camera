@@ -58,6 +58,7 @@ apt-get install -y \
     gnupg \
     lsb-release \
     jq \
+    vmtouch \
     avahi-daemon
 
 # numpy and opencv (cv2) come from apt above — prebuilt pip wheels are
@@ -243,8 +244,15 @@ sed "s/__USER__/${RUN_USER}/" "${SRC_DIR}/pi4cam.service" \
 sed "s/__USER__/${RUN_USER}/" "${SRC_DIR}/pi4cam-homekit.service" \
     > /etc/systemd/system/pi4cam-homekit.service
 
+# warm-cache timer: keeps ffmpeg's libraries in the page cache so live-view
+# spawns skip the SD reload (soft vmtouch, pages remain evictable)
+cp "${SRC_DIR}/pi4cam-warm.service" /etc/systemd/system/
+cp "${SRC_DIR}/pi4cam-warm.timer" /etc/systemd/system/
+
 systemctl daemon-reload
 systemctl enable mediamtx pi4cam pi4cam-homekit
+systemctl enable --now pi4cam-warm.timer
+systemctl start pi4cam-warm.service || true
 systemctl restart mediamtx pi4cam pi4cam-homekit
 
 # -----------------------------------------------------------------------

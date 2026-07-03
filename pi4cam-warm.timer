@@ -1,0 +1,9 @@
+[Unit]
+Description=pi4cam — re-warm ffmpeg libraries every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target
