@@ -1,6 +1,9 @@
+import fcntl
 import os
 import select
+import struct
 import subprocess
+import termios
 import threading
 import time
 import logging
@@ -14,6 +17,12 @@ _MAX_BACKOFF = 30
 # 10 s frame watchdog — turning every later ffmpeg hiccup into a full service
 # restart.
 _HEALTHY_RUN_S = 60
+# ffmpeg alive but the pipe continuously full for this long → it stopped
+# consuming (hung mediamtx blocks its TCP write; field-tested: -rw_timeout is
+# ignored by the rtsp output, so ffmpeg never exits on its own). Kill it and
+# let the drain/backoff loop recover. Must stay well under the 10 s frame
+# watchdog, counting the ~2 s the 1 MB pipe takes to fill.
+_STALL_KILL_S = 4
 
 
 class RtspPublisher:
@@ -34,6 +43,14 @@ class RtspPublisher:
         self._rtsp_url = rtsp_url
         self._proc: subprocess.Popen | None = None
         self._stop_event = threading.Event()
+        # "Pipe is full" threshold for the stall detector: the real capacity
+        # minus one write's worth of slack (falls back to the 64 KB default
+        # if the fd is not a pipe, e.g. in unit tests).
+        try:
+            capacity = fcntl.fcntl(pipe_r_fd, getattr(fcntl, "F_GETPIPE_SZ", 1032))
+        except OSError:
+            capacity = 65536
+        self._stall_threshold = max(capacity - 65536, capacity // 2)
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="rtsp-publisher"
         )
@@ -60,12 +77,11 @@ class RtspPublisher:
                         "-i", f"pipe:{self._pipe_r_fd}",
                         "-c:v", "copy",
                         "-rtsp_transport", "tcp",
-                        # Bound every socket I/O (µs): a frozen/hung mediamtx
-                        # must make ffmpeg EXIT — handing over to the drain +
-                        # backoff loop — instead of blocking alive forever
-                        # with a full pipe (the "zombie ffmpeg" mode, #34).
-                        # 5 s keeps the whole stall well under the 10 s frame
-                        # watchdog.
+                        # Best effort (µs): field testing showed the rtsp
+                        # output IGNORES this on Pi OS's ffmpeg — the FIONREAD
+                        # stall detector (_wait_or_kill_stalled) is the real
+                        # guarantee — but it is harmless and may help on
+                        # other builds.
                         "-rw_timeout", "5000000",
                         "-f", "rtsp",
                         self._rtsp_url,
@@ -81,7 +97,7 @@ class RtspPublisher:
                 delay = min(delay * 2, _MAX_BACKOFF)
                 continue
 
-            self._proc.wait()
+            self._wait_or_kill_stalled()
             if self._stop_event.is_set():
                 break
             if time.monotonic() - started > _HEALTHY_RUN_S:
@@ -92,6 +108,45 @@ class RtspPublisher:
             )
             self._drain_pipe(delay)
             delay = min(delay * 2, _MAX_BACKOFF)
+
+    def _wait_or_kill_stalled(self) -> None:
+        """
+        Wait for ffmpeg to exit — and kill it ourselves if it stops consuming
+        the pipe while staying alive (a hung mediamtx blocks its TCP write
+        forever). The kernel tells us the truth: FIONREAD on the read end
+        reports the backlog; a pipe continuously full for _STALL_KILL_S means
+        the reader is stuck. Killing it hands recovery to the drain/backoff
+        loop and keeps the camera side under the frame watchdog's radar.
+        """
+        stalled_since = None
+        while True:
+            try:
+                self._proc.wait(timeout=1.0)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+            if self._pipe_backlog() >= self._stall_threshold:
+                now = time.monotonic()
+                if stalled_since is None:
+                    stalled_since = now
+                elif now - stalled_since >= _STALL_KILL_S:
+                    logger.warning(
+                        "ffmpeg alive but not reading (pipe full for %ds) — killing it",
+                        _STALL_KILL_S,
+                    )
+                    self._proc.kill()
+                    self._proc.wait()
+                    return
+            else:
+                stalled_since = None
+
+    def _pipe_backlog(self) -> int:
+        """Bytes currently sitting unread in the pipe (0 on error)."""
+        try:
+            raw = fcntl.ioctl(self._pipe_r_fd, termios.FIONREAD, b"\x00\x00\x00\x00")
+            return struct.unpack("i", raw)[0]
+        except OSError:
+            return 0
 
     def _drain_pipe(self, seconds: float) -> None:
         """

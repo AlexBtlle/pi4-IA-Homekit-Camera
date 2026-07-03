@@ -3,6 +3,7 @@
 No hardware needed: subprocess and the clock are faked for the backoff logic,
 and the drain tests use a real os.pipe().
 """
+import itertools
 import os
 import select
 import time
@@ -16,8 +17,30 @@ class FakeProc:
 
     returncode = 1
 
-    def wait(self):
+    def wait(self, timeout=None):
         pass
+
+    def terminate(self):
+        pass
+
+
+class StallingProc:
+    """Alive forever (wait times out) until killed — the hung-ffmpeg case."""
+
+    returncode = -9
+
+    def __init__(self):
+        self.killed = False
+
+    def wait(self, timeout=None):
+        if self.killed:
+            return 0
+        if timeout is None:
+            raise AssertionError("blocking wait on a live stalled proc")
+        raise rtsp_publisher.subprocess.TimeoutExpired("ffmpeg", timeout)
+
+    def kill(self):
+        self.killed = True
 
     def terminate(self):
         pass
@@ -112,6 +135,62 @@ def test_ffmpeg_has_io_timeout(monkeypatch):
     timeout_us = int(args[args.index("-rw_timeout") + 1])
     # must expire comfortably under the 10 s frame watchdog
     assert 0 < timeout_us <= 8_000_000
+
+
+# ----------------------------------------------------------------------
+# Stall detector (hung ffmpeg: alive but not reading — field-tested via
+# a SIGSTOPped mediamtx, which -rw_timeout failed to catch)
+# ----------------------------------------------------------------------
+
+def test_stalled_ffmpeg_is_killed(monkeypatch):
+    pub = make_publisher()
+    proc = StallingProc()
+    pub._proc = proc
+    pub._stall_threshold = 1000
+    monkeypatch.setattr(pub, "_pipe_backlog", lambda: 1000)  # pipe stays full
+    clock = itertools.count(0.0, 1.0)
+    monkeypatch.setattr(rtsp_publisher.time, "monotonic", lambda: next(clock))
+    pub._wait_or_kill_stalled()
+    assert proc.killed
+
+
+def test_flowing_pipe_never_kills(monkeypatch):
+    # backlog keeps dropping below the threshold → the stall timer resets;
+    # ffmpeg eventually exits on its own and must not have been killed
+    pub = make_publisher()
+
+    class ExitsLater(StallingProc):
+        def __init__(self):
+            super().__init__()
+            self.polls = 0
+
+        def wait(self, timeout=None):
+            self.polls += 1
+            if self.polls >= 20:
+                return 0
+            return super().wait(timeout)
+
+    proc = ExitsLater()
+    pub._proc = proc
+    pub._stall_threshold = 1000
+    backlogs = itertools.cycle([1000, 0])  # full, then flowing again
+    monkeypatch.setattr(pub, "_pipe_backlog", lambda: next(backlogs))
+    clock = itertools.count(0.0, 1.0)
+    monkeypatch.setattr(rtsp_publisher.time, "monotonic", lambda: next(clock))
+    pub._wait_or_kill_stalled()
+    assert not proc.killed
+
+
+def test_pipe_backlog_reads_kernel_count():
+    r, w = os.pipe()
+    try:
+        pub = RtspPublisher(r, "rtsp://x")
+        assert pub._pipe_backlog() == 0
+        os.write(w, b"x" * 1234)
+        assert pub._pipe_backlog() == 1234
+    finally:
+        os.close(r)
+        os.close(w)
 
 
 # ----------------------------------------------------------------------
