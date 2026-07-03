@@ -28,5 +28,9 @@ jobs:
           cache-dependency-path: homekit/package-lock.json
       - run: npm ci
         working-directory: homekit
+      # Typecheck + compile: vitest transpiles without checking types, so on
+      # its own it only exercises the modules the tests import.
+      - run: npm run build
+        working-directory: homekit
       - run: npm test
         working-directory: homekit

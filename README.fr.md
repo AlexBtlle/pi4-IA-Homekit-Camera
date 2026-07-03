@@ -147,8 +147,7 @@ Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Sur un système 
 | `camera.sharpness` | 1.0 | Accentuation ISP (0.0–16.0). Essayer 1.5–2.0 pour compenser la mollesse de l'objectif. |
 | `camera.contrast` | 1.0 | Contraste ISP (0.0–32.0). |
 | `camera.saturation` | 1.0 | Saturation couleur ISP (0.0–32.0). Essayer 1.2–1.5 pour des couleurs plus riches. |
-| `camera.ir_grayscale` | false | **(bêta)** Bascule le flux **et** la miniature en niveaux de gris la nuit, supprimant la dominante rose/magenta IR (coût CPU nul, via saturation ISP). Désactivé par défaut. |
-| `camera.ir_probe_interval` | 90 | Secondes entre les sondes couleur servant à détecter la fin du mode nuit quand `ir_grayscale` est activé. |
+| `camera.ir_grayscale` | false | **(bêta)** Bascule le flux **et** la miniature en niveaux de gris en vision nocturne IR, supprimant la dominante rose du 850 nm. L'IR est détecté sur les statistiques chroma du flux de détection (avec hystérésis), et l'effet neutralise les plans couleur du frame avant encodage — les transitions jour/nuit sont mesurées sur de vraies données couleur. |
 | `camera.snapshot_path` | /dev/shm/pi4cam-snapshot.jpg | Emplacement d'écriture de la miniature JPEG — un chemin tmpfs (RAM), pour éviter l'usure de la carte SD due aux réécritures 24/7. |
 | `homekit.camera_name` | Pi Camera | Nom affiché dans l'app Maison |
 | `homekit.motion_timeout` | 10 | Durée (s) d'activation du capteur de mouvement |

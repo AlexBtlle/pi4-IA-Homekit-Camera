@@ -146,8 +146,7 @@ Everything lives in one file: [`config.yaml`](config.yaml). On an installed syst
 | `camera.sharpness` | 1.0 | ISP edge sharpening (0.0–16.0). Try 1.5–2.0 to compensate for lens softness. |
 | `camera.contrast` | 1.0 | ISP contrast (0.0–32.0). |
 | `camera.saturation` | 1.0 | ISP colour saturation (0.0–32.0). Try 1.2–1.5 for richer colours. |
-| `camera.ir_grayscale` | false | **(beta)** Auto-switch the stream **and** snapshot to grayscale at night, removing the pink/magenta IR cast (zero CPU, via ISP saturation). Off by default. |
-| `camera.ir_probe_interval` | 90 | Seconds between the colour probes used to detect the end of night mode when `ir_grayscale` is on. |
+| `camera.ir_grayscale` | false | **(beta)** Auto-switch the stream **and** snapshot to grayscale under IR night vision, removing the 850 nm pink cast. IR is detected from the chroma statistics of the detection stream (with hysteresis), and the effect neutralises the frame's colour planes before encoding — day/night transitions are measured on real colour data. |
 | `camera.snapshot_path` | /dev/shm/pi4cam-snapshot.jpg | Where the JPEG snapshot is written — a tmpfs (RAM) path, to keep the 24/7 rewrites off the SD card. |
 | `homekit.camera_name` | Pi Camera | Name shown in the Home app |
 | `homekit.motion_timeout` | 10 | Seconds the motion sensor stays active |
