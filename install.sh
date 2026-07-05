@@ -9,18 +9,18 @@ RUN_USER="${SUDO_USER:-pi}"
 
 MEDIAMTX_VERSION_OVERRIDE="${MEDIAMTX_VERSION:-}"
 
+# -----------------------------------------------------------------------
+# Helpers — defined before any use (the arch check below calls fatal)
+# -----------------------------------------------------------------------
+info()  { echo "==> $*"; }
+fatal() { echo "ERROR: $*" >&2; exit 1; }
+
 case "$(uname -m)" in
     aarch64) MEDIAMTX_ARCH="linux_arm64v8" ;;
     armv7l)  MEDIAMTX_ARCH="linux_arm7"    ;;
     x86_64)  MEDIAMTX_ARCH="linux_amd64"   ;;
     *) fatal "Unsupported architecture: $(uname -m)" ;;
 esac
-
-# -----------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------
-info()  { echo "==> $*"; }
-fatal() { echo "ERROR: $*" >&2; exit 1; }
 
 [[ "$EUID" -eq 0 ]] || fatal "Run as root: sudo bash $0"
 
@@ -182,10 +182,12 @@ info "Python dependencies installed."
 # -----------------------------------------------------------------------
 info "Building the HomeKit app (npm ci + tsc)..."
 pushd "${INSTALL_DIR}/homekit" >/dev/null
+# `|| true` inside the group: with pipefail, grep -v exits 1 when EVERY line
+# was filtered (or npm printed nothing) — that must not abort the install.
 if [[ -f package-lock.json ]]; then
-    npm ci --no-audit --no-fund 2>&1 | grep -v "npm warn deprecated"
+    npm ci --no-audit --no-fund 2>&1 | { grep -v "npm warn deprecated" || true; }
 else
-    npm install --no-audit --no-fund 2>&1 | grep -v "npm warn deprecated"
+    npm install --no-audit --no-fund 2>&1 | { grep -v "npm warn deprecated" || true; }
 fi
 npm run build
 popd >/dev/null
@@ -264,7 +266,7 @@ echo ""
 echo "=========================================================="
 echo "  Installation complete!"
 echo ""
-echo "  RTSP stream : rtsp://${LOCAL_IP}:8554/camera"
+echo "  RTSP stream : rtsp://127.0.0.1:8554/camera (local to the Pi only)"
 echo ""
 echo "  ┌──────────────────────────────────┐"
 echo "  │  HomeKit pairing PIN: ${PIN}   │"
