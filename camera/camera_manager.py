@@ -64,6 +64,14 @@ class CameraManager:
     # the Zero 2 W alive. Reverted to Fast by day.
     _NR_FAST = 1
     _NR_HIGH_QUALITY = 2
+    # Encoder bitrate floors for the live governor's requests (#47). Field,
+    # 2026-07-05 night: at the 1 Mbps day floor the stretched night image
+    # (noise across the whole frame) macroblocks into mush — two screenshots
+    # seconds apart show the rate control converging from clean to unusable.
+    # Night raises the floor to keep the noisy 1080p encodable; day keeps the
+    # encoder's practical minimum (policy stays in the Node governor).
+    _DAY_MIN_BITRATE = 500_000
+    NIGHT_MIN_BITRATE = 3_000_000
     # Night auto-levels (the digital AGC every commercial IR camera runs).
     # The scene's useful signal is found from lores-luma percentiles and
     # stretched to full range; a static curve cannot do this job — with the
@@ -273,6 +281,12 @@ class CameraManager:
         """Return the read-end fd of the H264 pipe. Pass to RtspPublisher."""
         return self._pipe_r
 
+    def _clamp_bitrate(self, bps: int) -> int:
+        """Floor depends on the time of day: the stretched night image costs
+        far more bits than a clean day frame (see NIGHT_MIN_BITRATE)."""
+        floor = self.NIGHT_MIN_BITRATE if self._ir_mode else self._DAY_MIN_BITRATE
+        return min(max(int(bps), floor), self._bitrate)
+
     def set_bitrate(self, bps: int) -> int:
         """
         Change the encoder bitrate live — no restart, no keyframe disruption,
@@ -280,10 +294,10 @@ class CameraManager:
         the rate control follows within one second (#47).
 
         Mechanism only: the bitrate *policy* lives in the HomeKit app, which
-        sees the negotiated sessions. Clamped to [500 kbps, configured
+        sees the negotiated sessions. Clamped to [day/night floor, configured
         bitrate]. Returns the bitrate actually in effect.
         """
-        bps = max(500_000, min(int(bps), self._bitrate))
+        bps = self._clamp_bitrate(bps)
         if self._encoder is None:
             return self._current_bitrate
         if bps != self._current_bitrate:
@@ -366,6 +380,11 @@ class CameraManager:
         """
         if self._picam2 is None:
             return
+        # If a live session is holding the encoder below the night floor when
+        # night falls, re-clamp it now — the governor's next request keeps
+        # day behaviour after the flip back.
+        if on and self._current_bitrate < self.NIGHT_MIN_BITRATE:
+            self.set_bitrate(self._current_bitrate)
         controls: dict = {}
         if self._ir_min_fps < self._fps:
             day_us = round(1e6 / self._fps)

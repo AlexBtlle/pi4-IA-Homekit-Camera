@@ -318,6 +318,26 @@ def test_night_lut_gamma_shapes_the_stretch():
     assert soft[60] == hard[60] == 255              # same white point
 
 
+def test_bitrate_floor_rises_at_night():
+    # The stretched night image macroblocks below ~3 Mbps (field, two
+    # screenshots seconds apart): the governor's 1000 kbps request must be
+    # floored at night, honoured by day.
+    cam = CameraManager({"camera": {"bitrate": 8_000_000}})
+    assert cam._clamp_bitrate(1_000_000) == 1_000_000          # day: honoured
+    assert cam._clamp_bitrate(100_000) == 500_000              # day floor
+    cam._ir_mode = True
+    assert cam._clamp_bitrate(1_000_000) == CameraManager.NIGHT_MIN_BITRATE
+    assert cam._clamp_bitrate(6_000_000) == 6_000_000          # above floor: honoured
+
+
+def test_night_bitrate_floor_never_exceeds_the_ceiling():
+    # A configured ceiling below the night floor wins (the encoder can't be
+    # driven past what the user allowed).
+    cam = CameraManager({"camera": {"bitrate": 2_000_000}})
+    cam._ir_mode = True
+    assert cam._clamp_bitrate(1_000_000) == 2_000_000
+
+
 def test_ir_gamma_default_and_clamping():
     assert CameraManager({"camera": {}})._ir_gamma == 2.2
     assert CameraManager({"camera": {"ir_gamma": 99}})._ir_gamma == 5.0
