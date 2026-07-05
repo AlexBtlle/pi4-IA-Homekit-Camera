@@ -245,9 +245,15 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     );
     ff.on("close", (code) => {
       keyframeSalvo.forEach(clearTimeout);
-      this.ongoingSessions.delete(sessionID);
+      const wasOngoing = this.ongoingSessions.delete(sessionID);
       if (code !== 0 && code !== null) {
         console.error(`[stream ${sessionID.slice(0, 8)}] ffmpeg exited ${code}`);
+        if (wasOngoing) {
+          // ffmpeg died mid-session (a HAP-initiated stop removes the session
+          // first, then SIGKILLs → code null). Tell the controller, or iOS
+          // keeps a frozen tile until the user closes it by hand (#38).
+          this.controller?.forceStopStreamingSession(sessionID);
+        }
       }
     });
   }

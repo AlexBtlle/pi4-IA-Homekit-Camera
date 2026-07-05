@@ -12,6 +12,11 @@ type Health = "ok" | "warn" | "crit" | "muted";
 export class QrWebServer {
   private server?: http.Server;
   private _qrBlock?: string;
+  // Page cache (#38): every request used to rebuild the whole page and spawn
+  // vcgencmd + systemctl — an aggressive scanner could load the Zero 2 W.
+  // The promise (not the string) is cached so concurrent hits share ONE build.
+  private _page?: { promise: Promise<string>; at: number };
+  private static readonly PAGE_TTL_MS = 3_000;
 
   constructor(
     private readonly setupUri: string,
@@ -37,14 +42,27 @@ export class QrWebServer {
 
   private listen(): void {
     this.server = http.createServer(async (req, res) => {
+      req.on("error", () => res.destroy()); // aborted request ≠ process crash
+      // Only the dashboard itself gets the (probed) page; favicon requests
+      // and scanners get a cheap 404 instead of two execFile spawns (#38).
+      if (req.method !== "GET" || (req.url ?? "").split("?")[0] !== "/") {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
       if (!this._qrBlock) {
         res.writeHead(503);
         res.end("Starting…");
         return;
       }
-      const page = await this.buildPage();
+      const page = await this.cachedPage();
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(page);
+    });
+
+    // A taken port (8080 is popular) must log, not crash-loop the service.
+    this.server.on("error", (e) => {
+      console.error(`[qrweb] server error: ${e.message} — status page unavailable`);
     });
 
     this.server.listen(this.port, "0.0.0.0", () => {
@@ -53,6 +71,14 @@ export class QrWebServer {
         `[qrweb] http://${hostname}.local:${this.port}  |  http://${localIP()}:${this.port}`,
       );
     });
+  }
+
+  private cachedPage(): Promise<string> {
+    const now = performance.now();
+    if (!this._page || now - this._page.at >= QrWebServer.PAGE_TTL_MS) {
+      this._page = { promise: this.buildPage(), at: now };
+    }
+    return this._page.promise;
   }
 
   private async buildPage(): Promise<string> {
