@@ -238,8 +238,21 @@ export class StreamingDelegate implements CameraStreamingDelegate {
         `?rtcpport=${session.videoReturnPort}&pkt_size=${mtu}`,
     ];
 
+    const t0 = performance.now();
     const ff = spawn("ffmpeg", args);
     this.ongoingSessions.set(sessionID, ff);
+
+    // Instrumentation (#43): splits the START→mediamtx-subscribe gap into
+    // "node queued the process" (this line) vs "exec + linking + RTSP
+    // handshake" (mediamtx's 'is reading' line). Field data 2026-07-05
+    // showed the full gap at 5-17 s on a busy Zero 2 W — this tells which
+    // half to attack next.
+    ff.once("spawn", () =>
+      console.log(
+        `[stream ${sessionID.slice(0, 8)}] ffmpeg spawned ` +
+          `+${Math.round(performance.now() - t0)} ms`,
+      ),
+    );
 
     // Ack the START immediately: iOS shows its spinner until SRTP packets
     // arrive regardless — the old wait-for-progress (with a 1.5 s fallback
@@ -249,12 +262,15 @@ export class StreamingDelegate implements CameraStreamingDelegate {
 
     // The instant-startup trick (#43): ask the encoder for an immediate IDR
     // instead of letting the viewer wait out the GOP. A salvo, because the
-    // keyframe only helps once OUR ffmpeg is subscribed to mediamtx — and its
-    // spawn takes ~1.7 s warm (up to ~5 s cold) on a Zero 2 W. Each extra
-    // keyframe is a ~100 KB one-off, invisible.
+    // keyframe only helps once OUR ffmpeg is subscribed to mediamtx — and
+    // field logs (2026-07-05) show that under load the subscribe lands
+    // anywhere from 4 to 17 s after START, not the ~2 s first assumed: the
+    // salvo now covers that whole window. Each keyframe is a ~100 KB
+    // one-off — eight of them spread over 20 s is invisible, and any that
+    // fire after the session closed are cancelled below.
     this.forceKeyframe?.();
-    const keyframeSalvo = [1000, 2000, 3000].map((ms) =>
-      setTimeout(() => this.forceKeyframe?.(), ms),
+    const keyframeSalvo = [1000, 2000, 3000, 5000, 8000, 12000, 16000, 20000].map(
+      (ms) => setTimeout(() => this.forceKeyframe?.(), ms),
     );
 
     ff.stderr.on("data", (d: Buffer) =>
