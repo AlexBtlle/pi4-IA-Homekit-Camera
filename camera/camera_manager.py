@@ -233,9 +233,12 @@ class CameraManager:
 
         self._last_frame_time = time.monotonic()
         self._picam2.start()
+        # buffering=0: the default BufferedWriter added a memcpy per write and
+        # could sit on NALs smaller than 8 KB; the encoder output goes straight
+        # to the (1 MB) kernel pipe instead (#41).
         self._picam2.start_encoder(
             self._encoder,
-            FileOutput(os.fdopen(self._pipe_w, "wb")),
+            FileOutput(os.fdopen(self._pipe_w, "wb", buffering=0)),
         )
         self._snapshot_thread.start()
         self._watchdog_thread.start()
@@ -584,6 +587,41 @@ class CameraManager:
                 logger.info("Daylight detected → colour stream")
             self._apply_night_camera(is_ir)
 
+    # Snapshot thumbnail size (fixed): HomeKit resizes client-side anyway.
+    _SNAP_W, _SNAP_H = 1280, 720
+
+    def _snapshot_bgr(self, arr):
+        """YUV420 main frame → 1280×720 BGR, resizing BEFORE the colour
+        conversion (#42). Converting at full resolution allocated a 6 MB BGR
+        image only to throw half the pixels away in the very next call —
+        resizing the Y/U/V planes first roughly halves the conversion work
+        and the allocation peak on every snapshot.
+
+        I420 packed layout in the (h·3/2, w) array: each chroma plane spans
+        h/4 array rows (two w/2-wide chroma rows per array row) — reshaped to
+        (h/2, w/2) before resizing. In night mode U/V are already 128
+        (neutralised upstream in the callback); resizing preserves that.
+        Any unexpected layout (stride padding) falls back to the legacy
+        full-resolution path.
+        """
+        h, w = self._height, self._width
+        tw, th = self._SNAP_W, self._SNAP_H
+        if arr.shape != (h * 3 // 2, w) or (w, h) == (tw, th):
+            bgr = cv2.cvtColor(arr, cv2.COLOR_YUV2BGR_I420)
+            return cv2.resize(bgr, (tw, th), interpolation=cv2.INTER_AREA)
+        quarter = h // 4
+        u = arr[h:h + quarter].reshape(h // 2, w // 2)
+        v = arr[h + quarter:h + 2 * quarter].reshape(h // 2, w // 2)
+        small = np.empty((th * 3 // 2, tw), dtype=arr.dtype)
+        small[:th] = cv2.resize(arr[:h], (tw, th), interpolation=cv2.INTER_AREA)
+        small[th:th + th // 4] = cv2.resize(
+            u, (tw // 2, th // 2), interpolation=cv2.INTER_AREA
+        ).reshape(th // 4, tw)
+        small[th + th // 4:] = cv2.resize(
+            v, (tw // 2, th // 2), interpolation=cv2.INTER_AREA
+        ).reshape(th // 4, tw)
+        return cv2.cvtColor(small, cv2.COLOR_YUV2BGR_I420)
+
     def _snapshot_worker(self) -> None:
         """Persistent worker: encodes and writes JPEG snapshots from the queue."""
         while True:
@@ -596,9 +634,10 @@ class CameraManager:
             try:
                 # In night mode the main frame's chroma was already neutralised
                 # in the camera callback, so this converts to a grey BGR as-is.
-                bgr = cv2.cvtColor(arr, cv2.COLOR_YUV2BGR_I420)
-                thumb = cv2.resize(bgr, (1280, 720), interpolation=cv2.INTER_AREA)
-                ok, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                # JPEG 85: visually identical for a 720p thumbnail, faster to
+                # encode and ~40 % smaller in /dev/shm (#41).
+                bgr = self._snapshot_bgr(arr)
+                ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 if ok:
                     tmp = self._snapshot_path + ".tmp"
                     with open(tmp, "wb") as f:
