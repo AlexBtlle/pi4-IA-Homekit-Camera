@@ -67,6 +67,11 @@ camera:
                           # at night (+1 = 2× target). Only bites once ir_min_fps has freed shutter
                           # headroom — on its own at 30 fps it saturates with no visible effect.
                           # Useful range 0.0–2.0. 0 = off.
+  ir_gamma: 2.2           # [BETA] digital night brightening: gamma curve on the image luma while
+                          # night mode is active (like raising Exposure in a photo editor, but at
+                          # capture time — stream, HKSV and snapshot all benefit). Works even when
+                          # the sensor is fully saturated, at the price of amplified noise.
+                          # 2.2 turns mid-shadows ~64 into ~136. Useful range 1.5–3.0; 1.0 = off.
 
 rtsp:
   port: 8554              # mediamtx RTSP port

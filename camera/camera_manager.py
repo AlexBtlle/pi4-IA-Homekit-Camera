@@ -111,6 +111,22 @@ class CameraManager:
         self._ir_exposure = max(-8.0, min(8.0, float(self._cfg.get("ir_exposure", 0.0))))
         self._ir_min_fps = max(1, int(self._cfg.get("ir_min_fps", 10)))
 
+        # ir_gamma — digital brightening of the night image. Field result: the
+        # sensor saturates (max gain, shutter clamped by the mode) long before
+        # the IR-lit scene meters bright, so no exposure control can help — but
+        # the shadows still hold recoverable signal (proven by brightening a
+        # screenshot after the fact). A gamma curve on the main frame's luma,
+        # applied in the same night callback that already neutralises U/V,
+        # lifts them at capture time: out = 255·(in/255)^(1/γ). γ=2.2 turns
+        # luma 64 into ~136. Digital → amplifies noise like any editor would.
+        # Precomputed as a 256-entry LUT; 1.0 disables (identity).
+        self._ir_gamma = max(1.0, min(5.0, float(self._cfg.get("ir_gamma", 2.2))))
+        self._ir_gamma_lut: np.ndarray | None = None
+        if self._ir_gamma > 1.0:
+            self._ir_gamma_lut = np.array(
+                self._build_gamma_lut(self._ir_gamma), dtype=np.uint8
+            )
+
         self._picam2 = None
         self._encoder = None
 
@@ -439,17 +455,22 @@ class CameraManager:
             self._last_lores_time = now
             arr = request.make_array("lores")
             if self._ir_grayscale:
-                self._update_night_mode(arr)
+                self._update_night_mode(arr, request)
             y_plane = arr[:self._lores_h, :self._lores_w].copy()
             with self._lores_condition:
                 self._latest_lores_frame = y_plane
                 self._lores_condition.notify_all()
 
-        # Night mode: neutralise the main frame's chroma in place (U and V →
-        # 128 = perfectly grey) before the H264 encoder consumes the buffer.
-        # Stream and snapshot both come out grayscale; ISP stays untouched.
+        # Night mode: brighten the main frame's luma through the gamma LUT and
+        # neutralise its chroma in place (U and V → 128 = perfectly grey)
+        # before the H264 encoder consumes the buffer. Stream and snapshot both
+        # come out brightened grayscale; ISP stays untouched. cv2.LUT writes
+        # into the mapped buffer directly (dst=) — no per-frame allocation.
         if self._ir_mode and self._MappedArray is not None:
             with self._MappedArray(request, "main") as m:
+                if self._ir_gamma_lut is not None:
+                    y = m.array[:self._height]
+                    cv2.LUT(y, self._ir_gamma_lut, dst=y)
                 m.array[self._height:, :] = 128
 
         if (self._snapshot_interval > 0
@@ -460,6 +481,13 @@ class CameraManager:
                 self._snapshot_queue.put_nowait(main_arr)
             except queue.Full:
                 pass  # previous snapshot still pending — skip this frame
+
+    @staticmethod
+    def _build_gamma_lut(gamma: float) -> list[int]:
+        """256-entry gamma curve: out = 255·(in/255)^(1/γ). Pure Python on
+        purpose — computed once at startup, and testable without numpy."""
+        inv = 1.0 / gamma
+        return [min(255, round(255.0 * (i / 255.0) ** inv)) for i in range(256)]
 
     @classmethod
     def _is_ir_frame(cls, u_mean: float, u_std: float,
@@ -490,7 +518,7 @@ class CameraManager:
         uniform = u_std < cls.IR_CHROMA_STD_MAX and v_std < cls.IR_CHROMA_STD_MAX
         return uniform and cast > cls.IR_CAST_MIN
 
-    def _update_night_mode(self, lores_arr) -> None:
+    def _update_night_mode(self, lores_arr, request=None) -> None:
         """
         Feed one analysed lores frame to the IR detector. Reads the U/V planes
         of the planar YUV420 array — always untouched colour data, since the
@@ -506,15 +534,31 @@ class CameraManager:
 
         # Calibration log (beta): one line per minute with the raw chroma
         # statistics, so thresholds are tuned from journalctl evidence rather
-        # than assumptions about a given LED/lens/AWB combination.
+        # than assumptions about a given LED/lens/AWB combination. The AE
+        # metadata tells how the sensor actually responded to the night tuning
+        # (is the shutter really at 1/ir_min_fps? is the gain pinned?) — the
+        # ground truth no amount of reasoning about controls can replace.
         now = time.monotonic()
         if now - self._ir_last_stats_log >= 60.0:
             self._ir_last_stats_log = now
+            ae = ""
+            if request is not None:
+                try:
+                    md = request.get_metadata()
+                    ae = "  exp=%.1fms gain=%.2fx dg=%.2f lux=%.0f" % (
+                        md.get("ExposureTime", 0) / 1000.0,
+                        md.get("AnalogueGain", 0.0),
+                        md.get("DigitalGain", 0.0),
+                        md.get("Lux", 0.0),
+                    )
+                except Exception:
+                    pass  # metadata is diagnostic sugar — never block the vote
             logger.info(
-                "IR stats: u=%.1f ±%.1f  v=%.1f ±%.1f  → frame=%s mode=%s",
+                "IR stats: u=%.1f ±%.1f  v=%.1f ±%.1f  → frame=%s mode=%s%s",
                 u_mean, u_std, v_mean, v_std,
                 "IR" if is_ir else "colour",
                 "night" if self._ir_mode else "day",
+                ae,
             )
 
         self._apply_ir_vote(is_ir)

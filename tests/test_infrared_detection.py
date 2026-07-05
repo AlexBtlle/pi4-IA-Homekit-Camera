@@ -264,3 +264,35 @@ def test_apply_night_camera_without_camera_is_noop():
     cam = CameraManager({"camera": {"ir_grayscale": True, "ir_min_fps": 10, "ir_exposure": 2.0}})
     assert cam._picam2 is None
     cam._apply_night_camera(True)   # no crash, no effect
+
+
+# ----------------------------------------------------------------------
+# Digital night brightening (ir_gamma LUT)
+# ----------------------------------------------------------------------
+
+def test_ir_gamma_lut_lifts_shadows_and_preserves_range():
+    # the curve itself is pure Python (numpy is mocked in tests)
+    lut = CameraManager._build_gamma_lut(2.2)
+    assert len(lut) == 256
+    assert lut[0] == 0 and lut[255] == 255          # black stays black, white white
+    assert lut[64] > 100                            # mid-shadows clearly lifted
+    assert all(lut[i + 1] >= lut[i] for i in range(255))  # monotonic
+    assert all(0 <= v <= 255 for v in lut)          # uint8-safe
+
+
+def test_ir_gamma_identity_disables_the_lut():
+    assert CameraManager({"camera": {"ir_gamma": 1.0}})._ir_gamma_lut is None
+
+
+def test_ir_gamma_default_and_clamping():
+    assert CameraManager({"camera": {}})._ir_gamma == 2.2
+    assert CameraManager({"camera": {"ir_gamma": 99}})._ir_gamma == 5.0
+    assert CameraManager({"camera": {"ir_gamma": 0.2}})._ir_gamma == 1.0
+    # clamping to 1.0 must also disable the LUT, not build an identity table
+    assert CameraManager({"camera": {"ir_gamma": 0.2}})._ir_gamma_lut is None
+
+
+def test_stronger_gamma_brightens_more():
+    soft = CameraManager._build_gamma_lut(1.5)
+    hard = CameraManager._build_gamma_lut(3.0)
+    assert hard[64] > soft[64] > 64
