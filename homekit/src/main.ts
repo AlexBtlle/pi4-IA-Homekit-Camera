@@ -30,6 +30,19 @@ import { RecordingDelegate } from "./recording";
 import { MotionService } from "./motion";
 import { QrWebServer } from "./qrweb";
 
+/** App version straight from package.json — the single source of truth.
+ *  dist/main.js lives one level below it, both in-repo and in /opt/pi4cam. */
+function appVersion(): string {
+  try {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"),
+    );
+    return typeof pkg.version === "string" ? pkg.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
 function main(): void {
   const config = loadConfig();
   const pairing = loadPairing();
@@ -48,7 +61,7 @@ function main(): void {
     .setCharacteristic(Characteristic.Manufacturer, "pi4-IA-Homekit-Camera")
     .setCharacteristic(Characteristic.Model, "Raspberry Pi Camera")
     .setCharacteristic(Characteristic.SerialNumber, pairing.username)
-    .setCharacteristic(Characteristic.FirmwareRevision, "1.4.0");
+    .setCharacteristic(Characteristic.FirmwareRevision, appVersion());
 
   const snapshots = new SnapshotProvider(config.snapshotPath);
   // Dynamic bitrate (#47): drive the camera's encoder toward what live

@@ -1,5 +1,5 @@
 [Unit]
-Description=pi4cam — camera stream + AI presence detection
+Description=pi4cam — camera stream + motion detection
 After=network-online.target mediamtx.service
 Wants=network-online.target
 # Wait for mediamtx RTSP server to be ready before starting the publisher

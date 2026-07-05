@@ -6,8 +6,8 @@ import { CameraController, Characteristic } from "@homebridge/hap-nodejs";
  *   POST /motion  → MotionSensor active for `timeoutSec`, then auto-reset.
  *
  * The MotionSensor lives on the CameraController (sensors.motion), so the same
- * trigger that fires the iOS notification will also arm HKSV recording once the
- * recording delegate is wired up (Jalon 2).
+ * trigger that fires the iOS notification also starts the HKSV recording via
+ * the recording delegate.
  */
 export class MotionService {
   private server?: http.Server;
