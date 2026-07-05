@@ -40,7 +40,8 @@ camera:
                           # (remote/4G ≈ 2 Mbps) and it returns here when they leave (#47).
   control_port: 8990      # localhost-only endpoint (HomeKit app → camera) driving the
                           # dynamic bitrate — never exposed on the network
-  rotation: 0             # 0 | 90 | 180 | 270
+  rotation: 0             # 0 | 180 — the Pi ISP cannot rotate 90°/270° (no hardware
+                          # transposition; such values are ignored with a warning)
   lores_width: 320        # motion-detection stream width  (Pi Zero 2W: 256)
   lores_height: 240       # motion-detection stream height (Pi Zero 2W: 192)
   snapshot_interval: 2    # seconds between JPEG snapshots — Pi Zero 2W: 5 | Pi 3: 3 | Pi 4: 2

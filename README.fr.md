@@ -142,7 +142,7 @@ Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Sur un système 
 | `camera.width` × `height` | 1920×1080 | Résolution capture / direct / enregistrement |
 | `camera.fps` | 30 | Cadence d'images |
 | `camera.bitrate` | 8000000 | Débit H264 (bit/s) — ~8 Mbps pour un 1080p30 net ; descendre à ~4 Mbps pour économiser la bande passante |
-| `camera.rotation` | 0 | 0 / 90 / 180 / 270 |
+| `camera.rotation` | 0 | 0 / 180 uniquement — l'ISP du Pi ne sait pas pivoter à 90°/270° (valeur ignorée avec un avertissement) |
 | `camera.full_fov` | true | Utilise toute la surface du capteur pour exploiter l'angle complet de l'objectif. La plupart des capteurs (IMX219, OV5647…) recadrent au centre en mode 1080p natif, ce qui rétrécit le champ ; cette option force un mode pleine vue (binned) puis redimensionne à la résolution de sortie. Mettre `false` pour le recadrage natif, plus net mais plus serré. |
 | `camera.sharpness` | 1.0 | Accentuation ISP (0.0–16.0). Essayer 1.5–2.0 pour compenser la mollesse de l'objectif. |
 | `camera.contrast` | 1.0 | Contraste ISP (0.0–32.0). |

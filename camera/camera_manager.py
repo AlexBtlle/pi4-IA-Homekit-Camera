@@ -195,14 +195,19 @@ class CameraManager:
 
         video_cfg = self._picam2.create_video_configuration(**cfg_kwargs)
 
-        if self._rotation:
+        if self._rotation == 180:
             from libcamera import Transform
-            transforms = {
-                90:  Transform(hflip=1, vflip=0),
-                180: Transform(hflip=1, vflip=1),
-                270: Transform(hflip=0, vflip=1),
-            }
-            video_cfg["transform"] = transforms.get(self._rotation, Transform())
+            video_cfg["transform"] = Transform(hflip=1, vflip=1)
+        elif self._rotation:
+            # The Pi ISP has no transposition path: libcamera.Transform only
+            # does hflip/vflip. Mapping 90/270 to a single flip (what v1 did)
+            # produced a silent MIRROR — worse than doing nothing (#32).
+            logger.warning(
+                "rotation: %d is not supported — the Pi ISP can only rotate "
+                "180° (hflip+vflip). Ignoring; mount the camera upright or "
+                "use rotation: 180.",
+                self._rotation,
+            )
 
         self._picam2.configure(video_cfg)
         self._picam2.pre_callback = self._lores_callback
