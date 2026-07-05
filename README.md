@@ -132,6 +132,17 @@ After the update, open `http://<pi>.local:8080` and check that everything is gre
 
 The video is encoded **once**, in hardware, on the camera. Everything downstream (live stream, recordings, snapshots) reuses that same H264 stream without re-encoding — that's why it stays fluid and light.
 
+### Passthrough design notes
+
+Zero re-encoding is the choice that makes this project viable on a Pi Zero 2 W — and it implies deliberately ignoring part of what HomeKit negotiates. These are known tolerances, shared by the DIY ecosystem (Scrypted, homebridge-camera-ffmpeg…), documented here for transparency:
+
+- **Fixed resolution** — HomeKit picks a resolution from the advertised list (often 640×360 for the grid or remote viewing) but always receives the native stream (1080p by default). iOS scales it client-side.
+- **Bitrate** *(the one negotiated parameter that IS honoured)* — live sessions drive the hardware encoder toward what they negotiate (~2 Mbps remote/cellular) and it returns to the configured ceiling when they leave. On a modest uplink, also consider a `camera.bitrate` of 3–4 Mbps.
+- **H264 profile** — the stream is always High profile regardless of what was negotiated; Apple decoders read it without complaint.
+- **HKSV recording configuration** — the profile/bitrate/iFrameInterval selected by the home hub are not applied (same passthrough reason); iCloud clips weigh whatever the camera encodes.
+- **Ghost live audio** — an AAC-ELD audio block is declared because HomeKit requires one in the negotiation, but no audio packet is ever sent (the camera module has no microphone). The speaker icon in the Home app does nothing.
+- **Snapshots** — always served at 1280×720 whatever size is requested; iOS resizes.
+
 ## Configuration
 
 Everything lives in one file: [`config.yaml`](config.yaml). On an installed system, edit `/opt/pi4cam/config.yaml` directly, then restart the services (`sudo systemctl restart pi4cam pi4cam-homekit`). Re-running `install.sh` never overwrites your values — it only injects keys added by newer versions (an annotated reference is kept at `/opt/pi4cam/config.yaml.dist`).

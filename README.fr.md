@@ -133,6 +133,17 @@ Après la mise à jour, ouvrez `http://<pi>.local:8080` et vérifiez que tout es
 
 La vidéo est encodée **une seule fois**, en matériel, sur la caméra. Tout ce qui suit (direct, enregistrements, snapshots) réutilise ce même flux H264 sans ré-encodage — c'est ce qui rend l'ensemble fluide et léger.
 
+### Les limites assumées du passthrough
+
+Le zéro ré-encodage est le choix qui rend le projet viable sur Pi Zero 2 W — et il implique d'ignorer délibérément une partie de ce que HomeKit négocie. Ce sont des tolérances connues, partagées par tout l'écosystème DIY (Scrypted, homebridge-camera-ffmpeg…), documentées ici par transparence :
+
+- **Résolution fixe** — HomeKit choisit une résolution dans la liste annoncée (souvent 640×360 en grille ou à distance) mais reçoit toujours le flux natif (1080p par défaut). iOS redimensionne côté client.
+- **Débit** *(le seul paramètre négocié qui EST honoré)* — les sessions live pilotent l'encodeur matériel vers ce qu'elles négocient (~2 Mbps en distant/cellulaire), et il remonte au plafond configuré quand elles se ferment. Sur un uplink modeste, envisager aussi un `camera.bitrate` de 3-4 Mbps.
+- **Profil H264** — le flux est toujours en High profile quel que soit le profil négocié ; les décodeurs Apple le lisent sans broncher.
+- **Configuration d'enregistrement HKSV** — le profil/bitrate/iFrameInterval sélectionnés par le concentrateur ne sont pas appliqués (même raison passthrough) ; les clips iCloud pèsent ce que la caméra encode.
+- **Audio live fantôme** — un bloc audio AAC-ELD est déclaré parce que HomeKit en exige un dans la négociation, mais aucun paquet audio n'est jamais émis (le module caméra n'a pas de micro). L'icône haut-parleur de l'app Maison ne produit rien.
+- **Snapshots** — toujours servis en 1280×720 quelle que soit la taille demandée ; iOS redimensionne.
+
 ## Configuration
 
 Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Sur un système installé, modifiez directement `/opt/pi4cam/config.yaml` puis redémarrez les services (`sudo systemctl restart pi4cam pi4cam-homekit`). Relancer `install.sh` n'écrase jamais vos valeurs — il n'ajoute que les clés introduites par les nouvelles versions (une référence annotée est conservée dans `/opt/pi4cam/config.yaml.dist`).
