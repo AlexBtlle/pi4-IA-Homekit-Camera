@@ -270,37 +270,42 @@ def test_apply_night_camera_without_camera_is_noop():
 # Digital night brightening (ir_gamma LUT)
 # ----------------------------------------------------------------------
 
-def test_ir_gamma_lut_lifts_shadows_and_preserves_range():
-    # the curve itself is pure Python (numpy is mocked in tests)
-    lut = CameraManager._build_gamma_lut(2.2)
+def test_night_lut_stretches_the_scene_range_to_full_scale():
+    # The 2026-07-05 field scene: sensor pinned at gain 8x / 41.6 ms, whole
+    # image living at luma ~12-60. Auto-levels must hand that band the full
+    # output range — the static curves (plain gamma = milky, black-anchored
+    # gamma = still dark) both failed exactly here.
+    lut = CameraManager._build_night_lut(12.0, 60.0, 2.2)
     assert len(lut) == 256
-    assert lut[0] == 0 and lut[255] == 255          # endpoints exact
-    assert lut[64] > 80                             # mid-shadows clearly lifted
+    assert lut[12] == 0                             # noise pedestal → black
+    assert lut[60] == 255                           # scene top → white
+    assert lut[36] > 150                            # scene midpoint clearly lifted
+    assert all(lut[i] == 0 for i in range(13))      # below pedestal stays black
+    assert all(lut[i] == 255 for i in range(60, 256))  # p99 clips, standard
     assert all(lut[i + 1] >= lut[i] for i in range(255))  # monotonic
     assert all(0 <= v <= 255 for v in lut)          # uint8-safe
-    assert all(lut[i] >= i for i in range(256))     # never darkens
 
 
-def test_ir_gamma_black_point_is_anchored():
-    # The IR noise floor (luma ≲ 16 at gain 8x) must NOT be lifted — that
-    # grey haze was the field verdict on the plain gamma ("image laiteuse").
-    lut = CameraManager._build_gamma_lut(2.2)
-    assert all(lut[i] == i for i in range(17))      # identity up to video black
+def test_night_lut_min_span_caps_the_digital_gain():
+    # A pitch-black room (signal 10..20) must not be stretched into pure
+    # noise: the span floors at NIGHT_LUT_MIN_SPAN (~5x max gain).
+    lut = CameraManager._build_night_lut(10.0, 20.0, 2.2)
+    span = CameraManager.NIGHT_LUT_MIN_SPAN
+    assert lut[20] < 255                            # NOT stretched to white
+    assert lut[10 + span] == 255                    # full white only at the floor span
 
 
-def test_ir_gamma_identity_disables_the_lut():
-    assert CameraManager({"camera": {"ir_gamma": 1.0}})._ir_gamma_lut is None
+def test_night_lut_gamma_shapes_the_stretch():
+    soft = CameraManager._build_night_lut(12.0, 60.0, 1.5)
+    hard = CameraManager._build_night_lut(12.0, 60.0, 3.0)
+    assert hard[24] > soft[24]                      # higher gamma = brighter lows
+    assert soft[12] == hard[12] == 0                # same black anchor
+    assert soft[60] == hard[60] == 255              # same white point
 
 
 def test_ir_gamma_default_and_clamping():
     assert CameraManager({"camera": {}})._ir_gamma == 2.2
     assert CameraManager({"camera": {"ir_gamma": 99}})._ir_gamma == 5.0
     assert CameraManager({"camera": {"ir_gamma": 0.2}})._ir_gamma == 1.0
-    # clamping to 1.0 must also disable the LUT, not build an identity table
-    assert CameraManager({"camera": {"ir_gamma": 0.2}})._ir_gamma_lut is None
-
-
-def test_stronger_gamma_brightens_more():
-    soft = CameraManager._build_gamma_lut(1.5)
-    hard = CameraManager._build_gamma_lut(3.0)
-    assert hard[64] > soft[64] > 64
+    # the LUT is built at runtime from scene stats — never at construction
+    assert CameraManager({"camera": {"ir_gamma": 2.2}})._ir_gamma_lut is None

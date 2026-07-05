@@ -68,12 +68,12 @@ camera:
                           # at night (+1 = 2× target). Only bites once ir_min_fps has freed shutter
                           # headroom — on its own at 30 fps it saturates with no visible effect.
                           # Useful range 0.0–2.0. 0 = off.
-  ir_gamma: 2.2           # [BETA] digital night brightening: tone curve on the image luma while
-                          # night mode is active (like raising Exposure in a photo editor, but at
-                          # capture time — stream, HKSV and snapshot all benefit). Works even when
-                          # the sensor is fully saturated. Black-point anchored: true blacks stay
-                          # black (no milky haze), midtones get the light (2.2: luma 64 → ~89,
-                          # 128 → ~159). Higher = brighter mids. Range 1.5–3.0; 1.0 = off.
+  ir_gamma: 2.2           # [BETA] night auto-levels (digital AGC, what commercial IR cameras do):
+                          # in night mode the scene's real signal range is measured continuously
+                          # (luma percentiles, flicker-smoothed, gain capped at ~5x) and stretched
+                          # to full scale — stream, HKSV and snapshot all benefit, even with the
+                          # sensor saturated. This value shapes the curve: higher = brighter
+                          # shadows, flatter highlights. 2.2 is right for most scenes; 1.0 = off.
 
 rtsp:
   port: 8554              # mediamtx RTSP port

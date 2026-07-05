@@ -240,13 +240,16 @@ stops car headlights from flipping the mode at night).
 - **Transitions logged**: look for `Night vision detected → grayscale stream` /
   `Daylight detected → colour stream` in `journalctl -u pi4cam`.
 - **Image too dark at night?** Three knobs, in the order to try them:
-  1. `camera.ir_gamma` (default `2.2`) — **digital brightening**: a black-point
-     anchored tone curve lifts the image midtones while night mode is active,
-     like raising Exposure in a photo editor but at capture time (stream, HKSV
-     and snapshot all get it). True blacks are preserved — a plain gamma lifted
-     the gain-8x noise floor into a milky haze (field verdict); the anchored
-     curve keeps ≤16 luma untouched. Works even when the sensor is fully
-     saturated. Higher = brighter midtones. Range 1.5–3.0, `1.0` = off.
+  1. `camera.ir_gamma` (default `2.2`) — **night auto-levels**: while night
+     mode is active, the scene's real signal range is measured continuously
+     (lores-luma percentiles, flicker-smoothed, digital gain capped at ~5x)
+     and stretched to full scale before encoding — stream, HKSV and snapshot
+     all get it, and it works even with the sensor fully saturated. This is
+     the digital AGC every commercial IR camera runs; static curves cannot do
+     the job (a deep-night scene lives entirely at luma ~15-50, at the noise
+     floor — field-measured). The value shapes the curve: higher = brighter
+     shadows. `2.2` fits most scenes; `1.0` disables. The per-minute
+     `IR stats … lut=low→high` log line shows the measured range.
   2. `camera.ir_min_fps` (default `10`) — **real light**: lets the framerate
      drop when dark so the exposure lengthens (at the configured fps libcamera
      caps the shutter at ~1/fps s and the AE can only add gain). No added

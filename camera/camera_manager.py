@@ -57,6 +57,17 @@ class CameraManager:
     # spent on shutter time (real light) before analogue gain (noise).
     _AE_EXPOSURE_NORMAL = 0
     _AE_EXPOSURE_LONG = 2
+    # Night auto-levels (the digital AGC every commercial IR camera runs).
+    # The scene's useful signal is found from lores-luma percentiles and
+    # stretched to full range; a static curve cannot do this job — with the
+    # sensor pinned at gain 8x / 41.6 ms, the whole scene lives at luma
+    # ~15-50, i.e. AT the noise floor (field, 2026-07-05).
+    NIGHT_LUT_LOW_PCT = 5     # percentile mapped toward black
+    NIGHT_LUT_HIGH_PCT = 99   # percentile mapped to white
+    NIGHT_LUT_MIN_SPAN = 48   # min stretched range: caps digital gain at ~5x
+    #                           so a pitch-black room can't become pure noise
+    NIGHT_STATS_EMA = 0.15    # per analysed frame (~1-2 s at 5 fps): smooths
+    #                           the percentiles so the exposure never flickers
 
     _instance = None
     _instance_lock = threading.Lock()
@@ -111,21 +122,20 @@ class CameraManager:
         self._ir_exposure = max(-8.0, min(8.0, float(self._cfg.get("ir_exposure", 0.0))))
         self._ir_min_fps = max(1, int(self._cfg.get("ir_min_fps", 10)))
 
-        # ir_gamma — digital brightening of the night image. Field result: the
-        # sensor saturates (max gain, shutter clamped by the mode) long before
-        # the IR-lit scene meters bright, so no exposure control can help — but
-        # the shadows still hold recoverable signal (proven by brightening a
-        # screenshot after the fact). A gamma curve on the main frame's luma,
-        # applied in the same night callback that already neutralises U/V,
-        # lifts them at capture time: out = 255·(in/255)^(1/γ). γ=2.2 turns
-        # luma 64 into ~136. Digital → amplifies noise like any editor would.
-        # Precomputed as a 256-entry LUT; 1.0 disables (identity).
+        # ir_gamma — night auto-levels curve shape. Field history: the sensor
+        # saturates at gain 8x / 41.6 ms (mode ceiling) long before an IR-lit
+        # room meters bright, so no exposure control can help. A plain gamma
+        # was milky (lifted the noise floor), a black-anchored gamma was dark
+        # (the whole scene lives AT the noise floor, luma ~15-50) — a static
+        # curve cannot fit both. Instead the night LUT is rebuilt from the
+        # scene's own lores-luma percentiles (auto-levels, EMA-smoothed, gain
+        # capped) and ir_gamma shapes the stretch: out = norm^(1/γ). The LUT
+        # is applied to the main frame's luma in the night callback below.
+        # 1.0 disables the whole brightening (chroma still neutralised).
         self._ir_gamma = max(1.0, min(5.0, float(self._cfg.get("ir_gamma", 2.2))))
-        self._ir_gamma_lut: np.ndarray | None = None
-        if self._ir_gamma > 1.0:
-            self._ir_gamma_lut = np.array(
-                self._build_gamma_lut(self._ir_gamma), dtype=np.uint8
-            )
+        self._ir_gamma_lut: np.ndarray | None = None  # rebuilt per analysed frame
+        self._night_low: float | None = None
+        self._night_high: float | None = None
 
         self._picam2 = None
         self._encoder = None
@@ -492,26 +502,51 @@ class CameraManager:
             except queue.Full:
                 pass  # previous snapshot still pending — skip this frame
 
-    @staticmethod
-    def _build_gamma_lut(gamma: float) -> list[int]:
-        """256-entry night tone curve: gamma lift anchored at a black point.
+    @classmethod
+    def _build_night_lut(cls, low: float, high: float, gamma: float) -> list[int]:
+        """256-entry auto-levels curve: map the scene's own signal range
+        [low, high] (luma percentiles) onto [0, 255], shaped by gamma.
 
-        A plain gamma (out = 255·(in/255)^(1/γ)) lifts the black floor too:
-        at gain 8x the IR noise pedestal (luma ≲ 16) turned into a grey haze
-        — "milky", field verdict 2026-07-05. So the curve is re-stretched
-        from the black point: inputs at or below BLACK stay identity, and
-        out = max(in, stretch) keeps it monotonic and never darkening.
-        Blacks stay black, midtones get the light. Pure Python on purpose —
-        computed once at startup, and testable without numpy.
+        Below `low` (the noise pedestal) → 0: blacks stay black. Above
+        `high` → 255 (top percentile clips, standard auto-levels). The span
+        is floored at NIGHT_LUT_MIN_SPAN so a pitch-black scene cannot be
+        stretched into pure noise (~5x max digital gain). Pure Python on
+        purpose — 256 entries at analysis rate is nothing, and it stays
+        testable without numpy.
         """
-        BLACK = 16  # video black ≈ the measured IR noise floor
+        span = max(high - low, float(cls.NIGHT_LUT_MIN_SPAN))
         inv = 1.0 / gamma
-        black = (BLACK / 255.0) ** inv
         lut = []
         for i in range(256):
-            stretch = 255.0 * max(0.0, ((i / 255.0) ** inv - black) / (1.0 - black))
-            lut.append(min(255, max(i, round(stretch))))
+            x = (i - low) / span
+            if x <= 0.0:
+                lut.append(0)
+            else:
+                lut.append(round(255.0 * min(1.0, x) ** inv))
         return lut
+
+    def _refresh_night_lut(self, lores_arr) -> None:
+        """Rebuild the night LUT from this frame's lores-luma statistics.
+
+        Runs in the camera callback thread (same thread that applies the LUT,
+        so the swap is race-free). The lores luma is never touched by the
+        gamma (only main is), so the statistics always see the raw sensor —
+        no feedback loop. EMA smoothing keeps the picture from flickering as
+        scene content moves through the percentiles.
+        """
+        y = lores_arr[:self._lores_h, :self._lores_w]
+        low = float(np.percentile(y, self.NIGHT_LUT_LOW_PCT))
+        high = float(np.percentile(y, self.NIGHT_LUT_HIGH_PCT))
+        if self._night_low is None or self._night_high is None:
+            self._night_low, self._night_high = low, high
+        else:
+            a = self.NIGHT_STATS_EMA
+            self._night_low += a * (low - self._night_low)
+            self._night_high += a * (high - self._night_high)
+        self._ir_gamma_lut = np.array(
+            self._build_night_lut(self._night_low, self._night_high, self._ir_gamma),
+            dtype=np.uint8,
+        )
 
     @classmethod
     def _is_ir_frame(cls, u_mean: float, u_std: float,
@@ -577,15 +612,26 @@ class CameraManager:
                     )
                 except Exception:
                     pass  # metadata is diagnostic sugar — never block the vote
+            lut_range = ""
+            if self._night_low is not None and self._night_high is not None:
+                lut_range = "  lut=%.0f→%.0f" % (self._night_low, self._night_high)
             logger.info(
-                "IR stats: u=%.1f ±%.1f  v=%.1f ±%.1f  → frame=%s mode=%s%s",
+                "IR stats: u=%.1f ±%.1f  v=%.1f ±%.1f  → frame=%s mode=%s%s%s",
                 u_mean, u_std, v_mean, v_std,
                 "IR" if is_ir else "colour",
                 "night" if self._ir_mode else "day",
-                ae,
+                ae, lut_range,
             )
 
         self._apply_ir_vote(is_ir)
+
+        # Night auto-levels: track the scene's real signal range while night
+        # mode is latched; drop the LUT (and stats) the moment day returns.
+        if self._ir_mode and self._ir_gamma > 1.0:
+            self._refresh_night_lut(lores_arr)
+        elif self._ir_gamma_lut is not None:
+            self._ir_gamma_lut = None
+            self._night_low = self._night_high = None
 
     def _apply_ir_vote(self, is_ir: bool) -> None:
         """Hysteresis: flip _ir_mode only after N consecutive contrary votes."""
