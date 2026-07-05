@@ -494,10 +494,24 @@ class CameraManager:
 
     @staticmethod
     def _build_gamma_lut(gamma: float) -> list[int]:
-        """256-entry gamma curve: out = 255·(in/255)^(1/γ). Pure Python on
-        purpose — computed once at startup, and testable without numpy."""
+        """256-entry night tone curve: gamma lift anchored at a black point.
+
+        A plain gamma (out = 255·(in/255)^(1/γ)) lifts the black floor too:
+        at gain 8x the IR noise pedestal (luma ≲ 16) turned into a grey haze
+        — "milky", field verdict 2026-07-05. So the curve is re-stretched
+        from the black point: inputs at or below BLACK stay identity, and
+        out = max(in, stretch) keeps it monotonic and never darkening.
+        Blacks stay black, midtones get the light. Pure Python on purpose —
+        computed once at startup, and testable without numpy.
+        """
+        BLACK = 16  # video black ≈ the measured IR noise floor
         inv = 1.0 / gamma
-        return [min(255, round(255.0 * (i / 255.0) ** inv)) for i in range(256)]
+        black = (BLACK / 255.0) ** inv
+        lut = []
+        for i in range(256):
+            stretch = 255.0 * max(0.0, ((i / 255.0) ** inv - black) / (1.0 - black))
+            lut.append(min(255, max(i, round(stretch))))
+        return lut
 
     @classmethod
     def _is_ir_frame(cls, u_mean: float, u_std: float,

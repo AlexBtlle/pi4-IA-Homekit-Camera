@@ -274,10 +274,18 @@ def test_ir_gamma_lut_lifts_shadows_and_preserves_range():
     # the curve itself is pure Python (numpy is mocked in tests)
     lut = CameraManager._build_gamma_lut(2.2)
     assert len(lut) == 256
-    assert lut[0] == 0 and lut[255] == 255          # black stays black, white white
-    assert lut[64] > 100                            # mid-shadows clearly lifted
+    assert lut[0] == 0 and lut[255] == 255          # endpoints exact
+    assert lut[64] > 80                             # mid-shadows clearly lifted
     assert all(lut[i + 1] >= lut[i] for i in range(255))  # monotonic
     assert all(0 <= v <= 255 for v in lut)          # uint8-safe
+    assert all(lut[i] >= i for i in range(256))     # never darkens
+
+
+def test_ir_gamma_black_point_is_anchored():
+    # The IR noise floor (luma ≲ 16 at gain 8x) must NOT be lifted — that
+    # grey haze was the field verdict on the plain gamma ("image laiteuse").
+    lut = CameraManager._build_gamma_lut(2.2)
+    assert all(lut[i] == i for i in range(17))      # identity up to video black
 
 
 def test_ir_gamma_identity_disables_the_lut():
