@@ -293,6 +293,10 @@ sudo tar czf pi4cam-pairing-backup.tgz -C /opt/pi4cam/homekit pairing.json persi
 # then scp/copy pi4cam-pairing-backup.tgz somewhere safe
 ```
 
+> ⚠️ This archive contains the accessory's **Ed25519 private key** (in
+> `persist/AccessoryInfo.*.json`) — anyone holding it can impersonate the
+> camera. Store the backup like a password, not like a config file.
+
 **Restore onto a freshly imaged card** (after running `install.sh`, which
 generates *new* secrets — restore over them so the accessory keeps its identity
 and you don't have to re-pair):

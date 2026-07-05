@@ -48,9 +48,12 @@ function main(): void {
   const pairing = loadPairing();
 
   // HAP-NodeJS persists pairing state here; keep it next to pairing.json so a
-  // single directory holds all the accessory's identity.
+  // single directory holds all the accessory's identity. Owner-only (0700):
+  // AccessoryInfo.*.json inside contains the accessory's Ed25519 PRIVATE key —
+  // the camera's cryptographic identity, more sensitive than the PIN (#35).
   const persistDir = path.join(homekitDir(), "persist");
-  fs.mkdirSync(persistDir, { recursive: true });
+  fs.mkdirSync(persistDir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(persistDir, 0o700); // mkdirSync mode is ignored if it existed
   HAPStorage.setCustomStoragePath(persistDir);
 
   const accessoryUUID = uuid.generate(`pi4cam:${pairing.username}`);

@@ -197,20 +197,29 @@ popd >/dev/null
 PAIRING="${INSTALL_DIR}/homekit/pairing.json"
 if [[ ! -f "${PAIRING}" ]]; then
     info "Generating HomeKit pairing secrets..."
+    # `secrets` (CSPRNG), not `random` (predictable Mersenne Twister) — these
+    # ARE security material. HAP also rejects a list of trivial PINs outright
+    # (the accessory would fail to publish): re-draw if one comes up.
     PIN="$(python3 -c "
-import random
-d = [random.randint(0,9) for _ in range(8)]
-print(f\"{''.join(map(str,d[:3]))}-{''.join(map(str,d[3:5]))}-{''.join(map(str,d[5:]))}\")
+import secrets
+BANNED = {'000-00-000','111-11-111','222-22-222','333-33-333','444-44-444',
+          '555-55-555','666-66-666','777-77-777','888-88-888','999-99-999',
+          '123-45-678','876-54-321'}
+while True:
+    d = ''.join(str(secrets.randbelow(10)) for _ in range(8))
+    pin = f'{d[:3]}-{d[3:5]}-{d[5:]}'
+    if pin not in BANNED:
+        print(pin); break
 ")"
     MAC="$(python3 -c "
-import random
-m = [random.randint(0,255) for _ in range(6)]
+import secrets
+m = list(secrets.token_bytes(6))
 m[0] = (m[0] & 0xFE) | 0x02   # locally administered, unicast
 print(':'.join(f'{b:02X}' for b in m))
 ")"
     SETUP_ID="$(python3 -c "
-import random, string
-print(''.join(random.choices(string.ascii_uppercase + string.digits, k=4)))
+import secrets, string
+print(''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(4)))
 ")"
     cat > "${PAIRING}" <<EOF
 {
@@ -227,6 +236,10 @@ else
 fi
 
 chown -R "${RUN_USER}:${RUN_USER}" "${INSTALL_DIR}"
+# The homekit dir holds the accessory's identity: pairing.json (PIN) and
+# persist/ (HAP Ed25519 private key, written 644 by HAP-NodeJS). Strip world
+# access on every run so existing installs get fixed too (#35).
+chmod -R o-rwx "${INSTALL_DIR}/homekit"
 usermod -aG video "${RUN_USER}" || true
 
 # -----------------------------------------------------------------------
