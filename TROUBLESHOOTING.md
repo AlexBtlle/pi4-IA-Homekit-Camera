@@ -164,6 +164,14 @@ ffprobe rtsp://127.0.0.1:8554/camera   # run ON the Pi (RTSP is localhost-only)
 Should report `h264, 1920x1080`. If it fails, the problem is upstream (`pi4cam`
 or `mediamtx`), not HomeKit — check their logs.
 
+**Black tile on an IPv6 network (beta):** when the iPhone/hub negotiates the
+live stream over IPv6, the session log shows `negotiated … over IPv6 (beta)`.
+That path (udp6 return ports + bracketed ffmpeg URL) is implemented per spec
+but not yet field-validated. If the tile stays black only on IPv6-preferred
+networks, check `journalctl -u pi4cam-homekit` for `prepareStream failed`
+(the Pi may have IPv6 disabled — the error is deliberate and explicit) and
+please open an issue with the log lines.
+
 ---
 
 ## Camera service won't start / `VIDIOC_STREAMON` crash

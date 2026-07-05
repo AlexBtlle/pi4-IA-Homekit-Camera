@@ -12,7 +12,7 @@ Pas de Homebridge, pas de plugin, pas de compte cloud, pas d'interface d'adminis
 
 ## Fonctionnalités
 
-- **Flux en direct** — le H264 matériel du Pi est transmis tel quel à HomeKit (SRTP, zéro ré-encodage). 1080p30 fluide, CPU quasiment au repos.
+- **Flux en direct** — le H264 matériel du Pi est transmis tel quel à HomeKit (SRTP, zéro ré-encodage). 1080p30 fluide, CPU quasiment au repos. Les contrôleurs IPv6 sont pris en charge (*bêta* — implémenté selon la spec, pas encore validé sur un réseau IPv6-preferred ; retours bienvenus).
 - **HomeKit Secure Video** — enregistrements déclenchés par le mouvement, stockés dans iCloud, lisibles directement dans l'historique de l'app Maison. Un prébuffer glissant de 4 secondes fait démarrer chaque clip avant l'événement.
 - **Classification intelligente** — la détection Personnes / Animaux / Véhicules est faite par votre concentrateur Apple (Apple TV / HomePod), exactement comme les caméras HKSV du commerce. Le Pi se contente de signaler le mouvement, de façon fiable et économe.
 - **Notifications riches** — alertes de mouvement avec snapshot sur l'iPhone.

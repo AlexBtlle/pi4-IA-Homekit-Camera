@@ -12,7 +12,7 @@ No Homebridge, no plugins, no cloud account, no admin dashboard to babysit. The 
 
 ## Features
 
-- **Live streaming** — the Pi's hardware H264 encoder is passed straight through to HomeKit (SRTP, zero re-encoding). Fluid 1080p30 with near-idle CPU.
+- **Live streaming** — the Pi's hardware H264 encoder is passed straight through to HomeKit (SRTP, zero re-encoding). Fluid 1080p30 with near-idle CPU. IPv6 controllers are supported (*beta* — implemented per spec, not yet field-tested on an IPv6-preferred network; reports welcome).
 - **HomeKit Secure Video** — motion-triggered recordings stored in iCloud, viewable directly in the Home app's timeline. A rolling 4-second prebuffer means every clip starts before the motion event.
 - **Smart classification** — People / Animals / Vehicles detection is done by your Apple home hub (Apple TV / HomePod), exactly like commercial HKSV cameras. The Pi just reports motion, cheaply and reliably.
 - **Rich notifications** — motion alerts with a snapshot on your iPhone.

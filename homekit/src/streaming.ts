@@ -18,6 +18,7 @@ import { SnapshotProvider } from "./snapshot";
 
 interface SessionInfo {
   address: string;
+  ipv6: boolean; // controller negotiated IPv6 (request.addressVersion) — #44
   videoPort: number;
   videoReturnPort: number;
   videoSSRC: number;
@@ -27,16 +28,27 @@ interface SessionInfo {
 /**
  * Reserve a free UDP port by binding to 0 and reading the assigned port.
  * HomeKit needs a return port for RTCP even though we only push video.
+ * The socket family must match the controller's addressVersion: an IPv6
+ * controller sends RTCP to a port that only exists if it was bound udp6 (#44).
  */
-function reservePort(): Promise<number> {
+function reservePort(type: "udp4" | "udp6"): Promise<number> {
   return new Promise((resolve, reject) => {
-    const socket = dgram.createSocket("udp4");
+    const socket = dgram.createSocket(type);
     socket.once("error", reject);
     socket.bind(0, () => {
       const port = (socket.address() as { port: number }).port;
       socket.close(() => resolve(port));
     });
   });
+}
+
+/**
+ * Format the controller address for an ffmpeg URL: IPv6 literals need
+ * brackets (`srtp://[fe80::…]:port`) — raw interpolation produces an invalid
+ * URL and a black tile with no usable error (#44, beta).
+ */
+export function srtpHost(address: string, ipv6: boolean): string {
+  return ipv6 ? `[${address}]` : address;
 }
 
 /**
@@ -84,13 +96,20 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     callback: PrepareStreamCallback,
   ): Promise<void> {
     try {
+      // IPv6 controllers (IPv6-preferred networks, some ISPs) negotiate an
+      // IPv6 target — the return ports must be bound udp6 or RTCP never
+      // lands. On a v4-only box the udp6 bind fails fast (EAFNOSUPPORT) and
+      // the error is surfaced instead of a silent black tile (#44, beta).
+      const ipv6 = request.addressVersion === "ipv6";
+      const udpType = ipv6 ? "udp6" : "udp4";
       const videoSSRC = CameraController.generateSynchronisationSource();
-      const videoReturnPort = await reservePort();
-      const audioReturnPort = await reservePort();
+      const videoReturnPort = await reservePort(udpType);
+      const audioReturnPort = await reservePort(udpType);
       const audioSSRC = CameraController.generateSynchronisationSource();
 
       this.pendingSessions.set(request.sessionID, {
         address: request.targetAddress,
+        ipv6,
         videoPort: request.video.port,
         videoReturnPort,
         videoSSRC,
@@ -171,7 +190,8 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     console.log(
       `[stream ${sessionID.slice(0, 8)}] negotiated ` +
         `${request.video.width}x${request.video.height}@${request.video.fps} ` +
-        `max ${request.video.max_bit_rate} kbps`,
+        `max ${request.video.max_bit_rate} kbps` +
+        (session.ipv6 ? " over IPv6 (beta)" : ""),
     );
     this.bitrate?.setSession(sessionID, request.video.max_bit_rate);
 
@@ -214,7 +234,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       "AES_CM_128_HMAC_SHA1_80",
       "-srtp_out_params",
       srtpParams,
-      `srtp://${session.address}:${session.videoPort}` +
+      `srtp://${srtpHost(session.address, session.ipv6)}:${session.videoPort}` +
         `?rtcpport=${session.videoReturnPort}&pkt_size=${mtu}`,
     ];
 
