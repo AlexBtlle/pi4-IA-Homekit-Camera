@@ -216,6 +216,7 @@ def test_night_transition_relaxes_shutter_and_reverts():
     assert on["FrameDurationLimits"] == (33333, 100000)   # 30 fps min .. 10 fps max
     assert on["AeExposureMode"] == LONG
     assert on["ExposureValue"] == 1.5
+    assert on["NoiseReductionMode"] == CameraManager._NR_HIGH_QUALITY
     for _ in range(EXIT):           # return to day
         cam._apply_ir_vote(False)
     assert cam._ir_mode is False
@@ -223,6 +224,7 @@ def test_night_transition_relaxes_shutter_and_reverts():
     assert off["FrameDurationLimits"] == (33333, 33333)   # re-pinned to 30 fps
     assert off["AeExposureMode"] == NORMAL
     assert off["ExposureValue"] == 0.0
+    assert off["NoiseReductionMode"] == CameraManager._NR_FAST
 
 
 def test_tuning_fires_once_per_transition_not_per_frame():
@@ -233,26 +235,39 @@ def test_tuning_fires_once_per_transition_not_per_frame():
 
 
 def test_ev_only_when_shutter_lever_disabled():
-    # ir_min_fps >= fps disables the shutter lever; only the EV bias remains.
-    cam = make_night_manager(ir_min_fps=30, ir_exposure=1.0)
+    # ir_min_fps >= fps disables the shutter lever; EV bias (and the night
+    # denoise that rides with the default ir_gamma) remain.
+    cam = make_night_manager(ir_min_fps=30, ir_exposure=1.0, ir_gamma=1.0)
     for _ in range(ENTRY):
         cam._apply_ir_vote(True)
     assert cam._picam2.controls_log[-1] == {"ExposureValue": 1.0}
 
 
 def test_shutter_only_when_no_ev():
-    cam = make_night_manager(ir_min_fps=10, ir_exposure=0.0)
+    cam = make_night_manager(ir_min_fps=10, ir_exposure=0.0, ir_gamma=1.0)
     for _ in range(ENTRY):
         cam._apply_ir_vote(True)
     on = cam._picam2.controls_log[-1]
     assert "ExposureValue" not in on
+    assert "NoiseReductionMode" not in on   # denoise is tied to the auto-levels
     assert on["FrameDurationLimits"] == (33333, 100000)
     assert on["AeExposureMode"] == LONG
 
 
+def test_night_denoise_rides_with_the_auto_levels():
+    # ir_gamma active → the ISP denoiser goes HighQuality at night, Fast by
+    # day (the stretch multiplies the gain-8x grain — clean it in hardware).
+    cam = make_night_manager(ir_min_fps=30, ir_exposure=0.0)   # gamma default 2.2
+    for _ in range(ENTRY):
+        cam._apply_ir_vote(True)
+    assert cam._picam2.controls_log[-1] == {
+        "NoiseReductionMode": CameraManager._NR_HIGH_QUALITY
+    }
+
+
 def test_fully_disabled_never_touches_controls():
-    # Shutter lever off AND no EV → nothing at all, existing behaviour preserved.
-    cam = make_night_manager(ir_min_fps=30, ir_exposure=0.0)
+    # All three night knobs off → nothing at all, existing behaviour preserved.
+    cam = make_night_manager(ir_min_fps=30, ir_exposure=0.0, ir_gamma=1.0)
     for _ in range(ENTRY):
         cam._apply_ir_vote(True)
     assert cam._ir_mode is True

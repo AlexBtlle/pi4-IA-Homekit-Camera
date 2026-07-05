@@ -57,6 +57,13 @@ class CameraManager:
     # spent on shutter time (real light) before analogue gain (noise).
     _AE_EXPOSURE_NORMAL = 0
     _AE_EXPOSURE_LONG = 2
+    # NoiseReductionMode enum (libcamera draft): the ISP's hardware denoiser.
+    # Video pipelines default to Fast; night mode switches to HighQuality —
+    # the auto-levels stretch multiplies the gain-8x grain by ~5, and cleaning
+    # it in the ISP is free (hardware) where any software denoise would eat
+    # the Zero 2 W alive. Reverted to Fast by day.
+    _NR_FAST = 1
+    _NR_HIGH_QUALITY = 2
     # Night auto-levels (the digital AGC every commercial IR camera runs).
     # The scene's useful signal is found from lores-luma percentiles and
     # stretched to full range; a static curve cannot do this job — with the
@@ -367,6 +374,12 @@ class CameraManager:
             controls["AeExposureMode"] = self._AE_EXPOSURE_LONG if on else self._AE_EXPOSURE_NORMAL
         if self._ir_exposure != 0.0:
             controls["ExposureValue"] = self._ir_exposure if on else 0.0
+        if self._ir_gamma > 1.0:
+            # The auto-levels stretch needs the cleanest source it can get:
+            # ISP hardware denoise at HighQuality while night mode is active.
+            controls["NoiseReductionMode"] = (
+                self._NR_HIGH_QUALITY if on else self._NR_FAST
+            )
         if not controls:
             return
         try:
