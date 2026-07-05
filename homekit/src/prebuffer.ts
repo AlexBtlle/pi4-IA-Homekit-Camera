@@ -4,7 +4,8 @@ import { ChildProcess, spawn } from "child_process";
 export interface Fragment {
   id: number;
   data: Buffer;
-  time: number; // epoch ms
+  time: number; // monotonic ms (performance.now) — the Pi has no RTC, so the
+  // wall clock can jump (NTP sync at boot) and must never age the ring (#36)
 }
 
 interface Listener {
@@ -18,6 +19,14 @@ interface Listener {
  */
 export class Mp4BoxParser {
   private buf: Buffer = Buffer.alloc(0);
+
+  // Largest plausible top-level box: a 1 s GOP at 8 Mbps is ~1 MB of mdat, so
+  // 32 MB is far beyond anything legitimate. A size above it — or size 0
+  // ("box extends to EOF", legal ISO-BMFF but nonsensical mid-stream) — used
+  // to make the parser stop consuming while `buf` grew unbounded on every
+  // chunk: a silent OOM march on a 512 MB board (#36). Throw instead; the
+  // Prebuffer catches it and recycles ffmpeg.
+  static readonly MAX_BOX_SIZE = 32 * 1024 * 1024;
 
   push(chunk: Buffer): { type: string; data: Buffer }[] {
     this.buf = this.buf.length ? Buffer.concat([this.buf, chunk]) : chunk;
@@ -38,7 +47,10 @@ export class Mp4BoxParser {
         header = 16;
       }
 
-      if (size < header || this.buf.length < size) {
+      if (size < header || size > Mp4BoxParser.MAX_BOX_SIZE) {
+        throw new Error(`corrupt MP4 box: type "${type}", size ${size}`);
+      }
+      if (this.buf.length < size) {
         break;
       }
       boxes.push({ type, data: this.buf.subarray(0, size) });
@@ -79,6 +91,11 @@ export class Prebuffer {
   private lastActivity = 0;
 
   private static readonly RETAIN_MS = 6000;
+  // Cap on fragments queued for one recording stream. A stalled home hub
+  // stops draining while ffmpeg keeps producing ~1 MB/s — unbounded, that
+  // buries a 512 MB board in minutes. 60 fragments ≈ 1 min of video: far
+  // beyond any transient hiccup, so past it the stream is abandoned (#36).
+  private static readonly MAX_QUEUE = 60;
   // ffmpeg alive but no stdout bytes for this long → hung RTSP session. The
   // 'close' handler only covers an ffmpeg that *exits*; field-tested on the
   // Python publisher, a SIGSTOPped mediamtx leaves ffmpeg blocked forever.
@@ -180,7 +197,17 @@ export class Prebuffer {
 
     ff.stdout.on("data", (chunk: Buffer) => {
       this.lastActivity = performance.now();
-      for (const box of this.parser.push(chunk)) {
+      let boxes;
+      try {
+        boxes = this.parser.push(chunk);
+      } catch (e) {
+        // Corrupt/EOF-sized box: the stream can't be re-synced — recycle
+        // ffmpeg ('close' resets the parse state and respawns with backoff).
+        console.error(`[prebuffer] ${(e as Error).message} — recycling ffmpeg`);
+        ff.kill("SIGKILL");
+        return;
+      }
+      for (const box of boxes) {
         this.onBox(box.type, box.data);
       }
     });
@@ -236,7 +263,7 @@ export class Prebuffer {
         this.addFragment({
           id: ++this.seq,
           data: Buffer.concat([this.pendingMoof, data]),
-          time: Date.now(),
+          time: performance.now(),
         });
         this.pendingMoof = undefined;
       }
@@ -245,7 +272,7 @@ export class Prebuffer {
 
   private addFragment(frag: Fragment): void {
     this.rolling.push(frag);
-    const cutoff = Date.now() - Prebuffer.RETAIN_MS;
+    const cutoff = performance.now() - Prebuffer.RETAIN_MS;
     while (this.rolling.length && this.rolling[0].time < cutoff) {
       this.rolling.shift();
     }
@@ -282,18 +309,30 @@ export class Prebuffer {
     yield init;
 
     const queue: Fragment[] = [];
+    let overflowed = false;
     let wake: (() => void) | undefined;
     const listener: Listener = {
       push: (f) => {
-        queue.push(f);
+        if (queue.length >= Prebuffer.MAX_QUEUE) {
+          overflowed = true; // consumer loop turns this into a thrown error
+        } else {
+          queue.push(f);
+        }
         wake?.();
       },
     };
     this.listeners.add(listener);
 
+    // ONE abort listener for the generator's whole life. The old code added
+    // a fresh {once:true} listener on every empty-queue wait (~1×/s), piling
+    // them up on the same signal until the abort: MaxListenersExceededWarning
+    // spam and memory held for the entire clip (#36).
+    const onAbort = () => wake?.();
+    signal.addEventListener("abort", onAbort, { once: true });
+
     try {
       // Prebuffer: fragments already captured before the trigger.
-      const cutoff = Date.now() - prebufferMs;
+      const cutoff = performance.now() - prebufferMs;
       let lastId = 0;
       for (const f of this.rolling.filter((f) => f.time >= cutoff)) {
         lastId = f.id;
@@ -302,10 +341,22 @@ export class Prebuffer {
 
       // Live fragments from here on.
       while (!signal.aborted) {
+        if (overflowed) {
+          // A stalled hub stopped draining: abandoning beats burying the
+          // board. The recording delegate surfaces the error and HomeKit
+          // closes the stream; the prebuffer itself keeps running.
+          console.error(
+            `[prebuffer] recording stream stalled — ${queue.length} fragments` +
+              ` queued (~${Math.round((queue.length * Prebuffer.RETAIN_MS) / 6000)}s), abandoning`,
+          );
+          throw new Error("recording consumer too slow — stream abandoned");
+        }
         if (queue.length === 0) {
           await new Promise<void>((resolve) => {
             wake = resolve;
-            signal.addEventListener("abort", () => resolve(), { once: true });
+            if (signal.aborted) {
+              resolve(); // raced: aborted between the while check and here
+            }
           });
           wake = undefined;
           continue;
@@ -318,6 +369,7 @@ export class Prebuffer {
         yield f.data;
       }
     } finally {
+      signal.removeEventListener("abort", onAbort);
       this.listeners.delete(listener);
     }
   }
