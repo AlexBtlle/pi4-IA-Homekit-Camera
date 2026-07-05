@@ -39,17 +39,18 @@ class PresenceDetector:
         motion_port = int(hk_cfg.get("motion_port", 8989))
         self._webhook_url = f"http://localhost:{motion_port}/motion"
 
-        # Episode tracking (#40): during continuous movement the webhook is
-        # re-posted before the Node-side sensor reset (motion_timeout) fires,
-        # so MotionDetected stays active for the WHOLE movement and the HKSV
-        # clip is never truncated mid-action. iOS only notifies on the
-        # inactive→active edge, so refreshing adds zero notifications.
+        # Episode tracking (#40): a movement episode spans motions separated
+        # by gaps shorter than `cooldown` — only that long a quiet spell ends
+        # it. While the episode lasts, THROUGH THE PAUSES TOO, the webhook is
+        # re-posted before the Node-side sensor reset (motion_timeout) fires.
+        # iOS notifies on the inactive→active edge, so the sensor rising
+        # exactly once per episode means one notification and one uncut HKSV
+        # clip per movement, however stop-start it is (a wandering cat pauses
+        # 15 s all the time — that used to fire a notification per resume).
         motion_timeout = float(hk_cfg.get("motion_timeout", 10))
         self._refresh_interval = max(1.0, motion_timeout / 2)
-        self._episode_idle = motion_timeout  # no motion this long → episode over
         self._episode_active = False
         self._episode_last_motion = 0.0
-        self._episode_end_time: float | None = None
         self._last_webhook = 0.0
 
         self._stop_event = threading.Event()
@@ -114,33 +115,33 @@ class PresenceDetector:
         """
         Episode state machine (#40). Returns True when a webhook must be sent.
 
-        - Inside an episode, the webhook is refreshed every _refresh_interval
-          (< motion_timeout) so the HomeKit sensor never resets mid-movement.
-        - An episode ends after _episode_idle without motion; the sensor then
-          resets on the Node side by itself.
-        - cooldown only separates *episodes* — it never truncates one.
+        - An episode starts on motion and ends only after `cooldown` seconds
+          WITHOUT motion: shorter pauses (a cat stopping to sniff) stay inside
+          the same episode instead of splitting it.
+        - While the episode is active — through the pauses too — the webhook
+          is refreshed every _refresh_interval (< motion_timeout) so the
+          HomeKit sensor never resets mid-episode. One rising edge per
+          episode: one iOS notification, one uncut HKSV clip.
+        - After the episode ends, the next motion is by definition ≥ cooldown
+          away from the last one: a genuinely new event, notified immediately.
         """
         if motion:
-            if self._episode_active:
-                self._episode_last_motion = now
-                if now - self._last_webhook >= self._refresh_interval:
-                    self._last_webhook = now
-                    logger.debug("Motion continues — refreshing sensor (area=%d)", area)
-                    return True
-                return False
-            if (self._episode_end_time is not None
-                    and now - self._episode_end_time < self._cooldown):
-                return False  # between episodes: cooling down
-            self._episode_active = True
             self._episode_last_motion = now
-            self._last_webhook = now
-            logger.info("Motion episode started (area=%d)", area)
-            return True
-        if (self._episode_active
-                and now - self._episode_last_motion >= self._episode_idle):
+            if not self._episode_active:
+                self._episode_active = True
+                self._last_webhook = now
+                logger.info("Motion episode started (area=%d)", area)
+                return True
+        if not self._episode_active:
+            return False
+        if now - self._episode_last_motion >= self._cooldown:
             self._episode_active = False
-            self._episode_end_time = self._episode_last_motion
             logger.info("Motion episode ended")
+            return False
+        if now - self._last_webhook >= self._refresh_interval:
+            self._last_webhook = now
+            logger.debug("Motion episode continues — refreshing sensor (area=%d)", area)
+            return True
         return False
 
     # ------------------------------------------------------------------

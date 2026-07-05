@@ -89,8 +89,10 @@ detection:
   mog2_history: 500
   mog2_var_threshold: 40
   min_motion_area: 1500   # tuned for humans; reduce to ~600 for cats/dogs
-  cooldown: 30            # quiet seconds between two motion EPISODES. During a
-                          # continuous movement the sensor is kept active for its
-                          # whole duration (the HKSV clip is never truncated)
+  cooldown: 30            # quiet seconds before a movement counts as OVER. Pauses shorter
+                          # than this stay inside the same episode: the sensor is held
+                          # active through them, so one stop-start wander (a cat…) fires ONE
+                          # notification and one uncut HKSV clip. Raise it if you still get
+                          # several notifications for what you consider a single event.
   analysis_fps: 10        # MOG2 analysis rate — Pi Zero 2W: 5 | Pi 3: 8 | Pi 4: 10
   mog2_detect_shadows: false  # shadow detection in MOG2 (more CPU, rarely useful)
