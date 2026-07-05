@@ -233,12 +233,14 @@ class CameraManager:
 
         self._last_frame_time = time.monotonic()
         self._picam2.start()
-        # buffering=0: the default BufferedWriter added a memcpy per write and
-        # could sit on NALs smaller than 8 KB; the encoder output goes straight
-        # to the (1 MB) kernel pipe instead (#41).
+        # NOTE (#41): buffering=0 is NOT possible here — picamera2's FileOutput
+        # type-gates on io.BufferedIOBase and rejects the raw FileIO that an
+        # unbuffered fdopen returns (RuntimeError, field-hit: crash loop on
+        # start). The default BufferedWriter stays; its per-write memcpy is
+        # the price of the API.
         self._picam2.start_encoder(
             self._encoder,
-            FileOutput(os.fdopen(self._pipe_w, "wb", buffering=0)),
+            FileOutput(os.fdopen(self._pipe_w, "wb")),
         )
         self._snapshot_thread.start()
         self._watchdog_thread.start()
