@@ -13,6 +13,8 @@ import logging
 import os
 import signal
 import sys
+
+import cv2
 import yaml
 
 from .camera_manager import CameraManager
@@ -42,6 +44,11 @@ def load_config() -> dict:
 
 
 def main() -> None:
+    # OpenCV's per-core thread pool buys nothing at lores sizes (320×240 MOG2)
+    # and only contends with the encoder and ffmpeg children for the four
+    # 1 GHz cores (#41).
+    cv2.setNumThreads(1)
+
     config = load_config()
 
     rtsp_cfg = config.get("rtsp", {})

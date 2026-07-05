@@ -6,6 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=__USER__
+# Cap glibc malloc arenas — retained-but-unused memory on a 512 MB board (#41).
+Environment=MALLOC_ARENA_MAX=2
 ExecStart=/usr/local/bin/mediamtx /opt/pi4cam/mediamtx.yml
 WorkingDirectory=/opt/pi4cam
 Restart=on-failure
