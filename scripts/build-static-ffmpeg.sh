@@ -57,12 +57,20 @@ info "Configuring (rtsp/rtp/srtp + h264 copy + native aac + fmp4, nothing else).
     --enable-protocol=tcp,udp,rtp,srtp,pipe,file \
     --enable-demuxer=rtsp,sdp \
     --enable-muxer=mp4,rtp \
-    --enable-parser=h264,aac \
+    --enable-parser=h264,hevc,aac \
+    --enable-decoder=pcm_u8,pcm_s16le \
     --enable-bsf=extract_extradata,h264_mp4toannexb,aac_adtstoasc \
     --enable-encoder=aac \
     --enable-indev=lavfi \
     --enable-filter=anullsrc,aresample,aformat,anull \
     --extra-cflags='-Os'
+# ^ hevc parser: NOT used by the app, but ffmpeg 7.1's ff_h2645_sei_reset()
+#   calls the aom film-grain code unguarded while only CONFIG_HEVC_SEI builds
+#   that object — an h264-only link dies on ff_aom_uninit_film_grain_params
+#   (hit in the field). The hevc parser selects hevc_sei and costs ~100 KB.
+# ^ pcm decoders: the lavfi input wraps anullsrc frames as PCM packets that
+#   must be decoded before the AAC encode — without them the prebuffer
+#   command fails with 'no decoder found for: pcm_u8'.
 
 info "Building (-j${JOBS} — expect 30-60 min on a Zero 2 W, ~2 min in CI)..."
 make -j"${JOBS}" ffmpeg
@@ -80,6 +88,17 @@ info "Self-test: the exact features the HomeKit app uses..."
 "${PREFIX}/ffmpeg-static" -hide_banner -demuxers 2>/dev/null | grep -q rtsp
 "${PREFIX}/ffmpeg-static" -hide_banner -muxers   2>/dev/null | grep -q " rtp "
 "${PREFIX}/ffmpeg-static" -hide_banner -protocols 2>/dev/null | grep -q srtp
+# live path, full command shape against a dead port: every option must parse
+# (the only acceptable failure is the connection itself)
+LIVE_OUT=$("${PREFIX}/ffmpeg-static" -hide_banner -loglevel error \
+    -fflags nobuffer -flags low_delay -analyzeduration 0 -probesize 32 \
+    -rtsp_transport tcp -i rtsp://127.0.0.1:1/selftest \
+    -an -sn -dn -codec:v copy -f rtp -payload_type 99 -ssrc 12345 \
+    -srtp_out_suite AES_CM_128_HMAC_SHA1_80 \
+    -srtp_out_params a2tra2tra2tra2tra2tra2tra2tra2tra2tra2tr \
+    "srtp://127.0.0.1:2?rtcpport=3&pkt_size=1316" 2>&1 || true)
+echo "${LIVE_OUT}" | grep -q "Connection refused" \
+    || { echo "live-path self-test failed: ${LIVE_OUT}" >&2; exit 1; }
 info "Self-test OK."
 
 echo ""
