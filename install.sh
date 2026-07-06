@@ -50,7 +50,7 @@ apt-get install -y \
     python3-libcamera \
     python3-numpy \
     python3-opencv \
-    python3-venv \
+    python3-yaml \
     ffmpeg \
     rpicam-apps \
     curl \
@@ -61,9 +61,10 @@ apt-get install -y \
     vmtouch \
     avahi-daemon
 
-# numpy and opencv (cv2) come from apt above — prebuilt pip wheels are
-# unreliable across Raspberry Pi OS / Python versions. The venv accesses
-# them via --system-site-packages.
+# EVERY Python dependency comes from apt (numpy, cv2, picamera2, yaml):
+# prebuilt pip wheels are unreliable across Raspberry Pi OS / Python
+# versions, and apt packages exist for every arch Raspbian builds — ARMv6
+# included. No venv, no pip, no PyPI network dependency.
 
 # -----------------------------------------------------------------------
 # 2. Node.js 22 (for the HAP-NodeJS HomeKit app)
@@ -209,17 +210,17 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# 5. Python virtual environment
+# 5. Python runtime — system python + apt packages only (no venv, no pip)
 # -----------------------------------------------------------------------
-VENV="${INSTALL_DIR}/venv"
-if [[ ! -d "${VENV}" ]]; then
-    info "Creating Python virtual environment..."
-    # --system-site-packages gives access to apt-installed picamera2/libcamera
-    python3 -m venv --system-site-packages "${VENV}"
+# The venv + pip dance existed to install exactly ONE package (PyYAML) that
+# apt ships as python3-yaml. Dropping it saves 1-2 min of install on a
+# Zero 2 W (the pip self-upgrade alone was 30-60 s), removes the PyPI
+# network dependency, frees ~70 MB of SD, and keeps every Python dependency
+# ARMv6-buildable from the Raspbian archive.
+if [[ -d "${INSTALL_DIR}/venv" ]]; then
+    info "Removing the legacy virtualenv (Python deps now come from apt)..."
+    rm -rf "${INSTALL_DIR}/venv"
 fi
-"${VENV}/bin/pip" install --quiet --upgrade pip
-"${VENV}/bin/pip" install --quiet -r "${SRC_DIR}/requirements.txt"
-info "Python dependencies installed."
 
 # -----------------------------------------------------------------------
 # 6. HomeKit app: build + pairing secrets (unique MAC + PIN + setup ID)

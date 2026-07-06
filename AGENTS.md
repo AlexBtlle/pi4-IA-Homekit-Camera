@@ -55,8 +55,9 @@ cd homekit && npm test             # tests TypeScript (vitest)
 cd homekit && npm run build        # compile TS → dist/
 ```
 
-Déploiement sur le Pi (installe dans `/opt/pi4cam`, build le venv + le Node,
-fait un deep-merge de config.yaml qui préserve les valeurs utilisateur) :
+Déploiement sur le Pi (installe dans `/opt/pi4cam`, dépendances Python 100 %
+apt — pas de venv ni pip —, build le Node, fait un deep-merge de config.yaml
+qui préserve les valeurs utilisateur) :
 
 ```bash
 sudo bash install.sh
