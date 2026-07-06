@@ -63,7 +63,7 @@ cd pi4-IA-Homekit-Camera
 sudo bash install.sh
 ```
 
-The installer sets up everything: system packages, Node.js 22, mediamtx, the Python camera pipeline, the HomeKit app, and three systemd services. At the end it prints your **pairing PIN**, and the HomeKit service logs a **QR code**:
+The installer sets up everything: system packages, Node.js 22, mediamtx, the Python camera pipeline, the HomeKit app, and three systemd services. **Nothing is compiled on your Pi** — heavy binaries (mediamtx, the lean ffmpeg that makes live view start in ~0.2 s) are downloaded prebuilt from releases and checksum-verified. At the end it prints your **pairing PIN**, and the HomeKit service logs a **QR code**:
 
 ```bash
 journalctl -u pi4cam-homekit -b --no-pager | head -40
