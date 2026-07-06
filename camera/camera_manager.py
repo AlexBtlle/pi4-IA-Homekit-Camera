@@ -623,14 +623,16 @@ class CameraManager:
         v_mean, v_std = float(v.mean()), float(v.std())
         is_ir = self._is_ir_frame(u_mean, u_std, v_mean, v_std)
 
-        # Calibration log (beta): one line per minute with the raw chroma
-        # statistics, so thresholds are tuned from journalctl evidence rather
-        # than assumptions about a given LED/lens/AWB combination. The AE
-        # metadata tells how the sensor actually responded to the night tuning
-        # (is the shutter really at 1/ir_min_fps? is the gain pinned?) — the
-        # ground truth no amount of reasoning about controls can replace.
+        # Calibration log (beta): one line every 10 minutes with the raw
+        # chroma statistics, so thresholds are tuned from journalctl evidence
+        # rather than assumptions about a given LED/lens/AWB combination. The
+        # AE metadata tells how the sensor actually responded to the night
+        # tuning (shutter really relaxed? gain pinned?) — ground truth no
+        # reasoning about controls can replace. 10 min ≈ 144 lines/day:
+        # journald-friendly, still plenty to calibrate a new rig overnight
+        # (the full 2026-07-05 validation ran at 1/min).
         now = time.monotonic()
-        if now - self._ir_last_stats_log >= 60.0:
+        if now - self._ir_last_stats_log >= 600.0:
             self._ir_last_stats_log = now
             ae = ""
             if request is not None:

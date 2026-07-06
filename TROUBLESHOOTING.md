@@ -248,8 +248,9 @@ stops car headlights from flipping the mode at night).
      the digital AGC every commercial IR camera runs; static curves cannot do
      the job (a deep-night scene lives entirely at luma ~15-50, at the noise
      floor — field-measured). The value shapes the curve: higher = brighter
-     shadows. `2.2` fits most scenes; `1.0` disables. The per-minute
-     `IR stats … lut=low→high` log line shows the measured range.
+     shadows. `2.2` fits most scenes; `1.0` disables. The periodic
+     `IR stats … lut=low→high` log line (every 10 min) shows the measured
+     range and the sensor's real exposure/gain — the calibration evidence.
   2. `camera.ir_min_fps` (default `10`) — **real light**: lets the framerate
      drop when dark so the exposure lengthens (at the configured fps libcamera
      caps the shutter at ~1/fps s and the AE can only add gain). No added
