@@ -128,6 +128,50 @@ else
 fi
 
 # -----------------------------------------------------------------------
+# 3b. Lean static ffmpeg — instant live startup (#43/#49)
+# -----------------------------------------------------------------------
+# Debian's ffmpeg links ~150 shared libraries and costs 5-8 s just to START
+# on a memory-pressured 512 MB Pi; the lean build starts in ~0.2 s (x61,
+# field-measured). Prebuilt by CI (.github/workflows/ffmpeg-static.yml) from
+# scripts/build-static-ffmpeg.sh and published as a release. Every failure
+# path here is SOFT: no release yet, offline, non-arm64, bad checksum — the
+# HomeKit app auto-detects the binary and falls back to the system ffmpeg,
+# so the install always works. Users never compile anything.
+FFSTATIC="${INSTALL_DIR}/bin/ffmpeg-static"
+if [[ "$(uname -m)" != "aarch64" ]]; then
+    info "Lean ffmpeg: prebuilt only for arm64 — using the system ffmpeg."
+    info "  (optional: build it locally with scripts/build-static-ffmpeg.sh)"
+elif [[ -x "${FFSTATIC}" ]]; then
+    info "Lean ffmpeg already installed at ${FFSTATIC}, skipping."
+    info "  (delete it and re-run install.sh to fetch a newer release)"
+else
+    info "Fetching the prebuilt lean ffmpeg (instant live startup)..."
+    FF_TAG="$(curl -fsSL \
+        "https://api.github.com/repos/AlexBtlle/pi4-IA-Homekit-Camera/releases" \
+        | jq -r '[.[] | select(.tag_name | startswith("ffmpeg-static-"))][0].tag_name // empty' \
+        || true)"
+    if [[ -z "${FF_TAG}" ]]; then
+        info "No ffmpeg-static release available — using the system ffmpeg (slower live startup)."
+    else
+        FF_URL="https://github.com/AlexBtlle/pi4-IA-Homekit-Camera/releases/download/${FF_TAG}"
+        FF_TMP="$(mktemp -d)"
+        if curl -fsSL "${FF_URL}/ffmpeg-static-arm64" -o "${FF_TMP}/ffmpeg-static" \
+           && curl -fsSL "${FF_URL}/ffmpeg-static-arm64.sha256" -o "${FF_TMP}/sha256" \
+           && [[ "$(sha256sum "${FF_TMP}/ffmpeg-static" | awk '{print $1}')" \
+                 == "$(awk '{print $1}' "${FF_TMP}/sha256")" ]] \
+           && chmod +x "${FF_TMP}/ffmpeg-static" \
+           && "${FF_TMP}/ffmpeg-static" -version >/dev/null 2>&1; then
+            mkdir -p "${INSTALL_DIR}/bin"
+            install -m 755 "${FF_TMP}/ffmpeg-static" "${FFSTATIC}"
+            info "Lean ffmpeg ${FF_TAG} installed — live sessions start in ~0.2 s."
+        else
+            info "Download or verification failed — using the system ffmpeg (slower live startup)."
+        fi
+        rm -rf "${FF_TMP}"
+    fi
+fi
+
+# -----------------------------------------------------------------------
 # 4. Project files
 # -----------------------------------------------------------------------
 info "Deploying project files to ${INSTALL_DIR}..."
