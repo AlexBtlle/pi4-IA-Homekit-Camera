@@ -278,6 +278,38 @@ stops car headlights from flipping the mode at night).
 
 ---
 
+## USB webcam (beta)
+
+`camera.source: usb` drives a UVC webcam through one long-lived ffmpeg
+instead of picamera2 — live view, snapshots, motion detection **and HKSV**
+work unchanged (everything downstream only sees mediamtx and the snapshot
+file). Requested by a Pi 3 user; field feedback welcome.
+
+**Pick the right `usb_format`** — list what your webcam actually outputs:
+
+```bash
+v4l2-ctl --device /dev/video0 --list-formats-ext
+```
+
+- `MJPG` → `usb_format: mjpeg` (most webcams; decoded then re-encoded by the
+  Pi's **hardware** H264 encoder `h264_v4l2m2m` — never software x264)
+- `H264` → `usb_format: h264` — the jackpot: onboard encoder, `-c:v copy`
+  end-to-end, near-zero CPU (the CSI philosophy, ideal on a Zero 2 W)
+- `YUYV` → `usb_format: yuyv` — raw frames: USB 2.0 bandwidth caps this
+  around 720p30. Prefer MJPEG when available.
+
+**Match `width`/`height`/`fps` to a mode the webcam really offers** (from the
+same v4l2-ctl output) — ffmpeg fails fast on an unsupported combination and
+the service restarts in a loop; `journalctl -u pi4cam` shows ffmpeg's error.
+
+**Beta limitations:** `ir_grayscale` is CSI-only (ignored with a warning);
+dynamic bitrate (#47) and instant-keyframe startup (#43) need the encoder
+ioctl handle the CSI backend owns — on USB the bitrate is fixed at
+`camera.bitrate` and a live view waits out the 1 s GOP (h264-native webcams:
+whatever GOP the camera uses, check its own settings if startup feels slow).
+
+---
+
 ## Snapshot
 
 The camera service writes a fresh JPEG to a **tmpfs** path (RAM-backed, no SD

@@ -149,6 +149,9 @@ Everything lives in one file: [`config.yaml`](config.yaml). On an installed syst
 
 | Key | Default | Description |
 |---|---|---|
+| `camera.source` | csi | `csi` (Pi camera module) or `usb` (UVC webcam, *beta* — see [TROUBLESHOOTING](TROUBLESHOOTING.md#usb-webcam-beta)) |
+| `camera.device` | /dev/video0 | V4L2 device (`source: usb` only) |
+| `camera.usb_format` | mjpeg | Webcam output: `mjpeg` / `yuyv` / `h264` (`source: usb` only) |
 | `camera.width` × `height` | 1920×1080 | Capture / stream / recording resolution |
 | `camera.fps` | 30 | Frame rate |
 | `camera.bitrate` | 8000000 | H264 bitrate (bit/s) — ~8 Mbps for crisp 1080p30; lower to ~4 Mbps to save bandwidth |

@@ -150,6 +150,9 @@ Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Sur un système 
 
 | Clé | Défaut | Description |
 |---|---|---|
+| `camera.source` | csi | `csi` (module caméra Pi) ou `usb` (webcam UVC, *bêta* — voir [TROUBLESHOOTING](TROUBLESHOOTING.md#usb-webcam-beta)) |
+| `camera.device` | /dev/video0 | Périphérique V4L2 (`source: usb` uniquement) |
+| `camera.usb_format` | mjpeg | Sortie de la webcam : `mjpeg` / `yuyv` / `h264` (`source: usb` uniquement) |
 | `camera.width` × `height` | 1920×1080 | Résolution capture / direct / enregistrement |
 | `camera.fps` | 30 | Cadence d'images |
 | `camera.bitrate` | 8000000 | Débit H264 (bit/s) — ~8 Mbps pour un 1080p30 net ; descendre à ~4 Mbps pour économiser la bande passante |
