@@ -13,21 +13,29 @@
 # HKSV prebuffer — and zero external dependencies. One small binary,
 # ~0.2 s startup, trivially cacheable.
 #
-# Run ON the Pi (any 64-bit model; ~30-60 min on a Zero 2 W):
+# Normal users don't run this: install.sh fetches the prebuilt binary from
+# the project releases (built by CI from this very script). Run it yourself
+# to build locally (any 64-bit Pi; ~30-60 min on a Zero 2 W):
 #   bash scripts/build-static-ffmpeg.sh
 # The HomeKit app auto-detects /opt/pi4cam/bin/ffmpeg-static on restart;
 # to go back to the system ffmpeg, delete that file and restart.
+#
+# CI usage (see .github/workflows/ffmpeg-static.yml):
+#   PREFIX=$PWD/out JOBS=$(nproc) bash scripts/build-static-ffmpeg.sh
 set -euo pipefail
 
 FFMPEG_VERSION="${FFMPEG_VERSION:-7.1.1}"
 JOBS="${JOBS:-2}"          # -j2 keeps gcc well under the Zero 2 W's 512 MB
-PREFIX="/opt/pi4cam/bin"
+PREFIX="${PREFIX:-/opt/pi4cam/bin}"
 WORK="${TMPDIR:-$HOME}/pi4cam-ffmpeg-build"
+SUDO="sudo"
+[[ "$(id -u)" -eq 0 ]] && SUDO=""
 
 info() { echo "==> $*"; }
 
 info "Installing build dependencies..."
-sudo apt-get install -y build-essential curl xz-utils
+${SUDO} apt-get update -qq || true
+${SUDO} apt-get install -y build-essential curl xz-utils ca-certificates
 
 mkdir -p "${WORK}"
 cd "${WORK}"
@@ -56,12 +64,12 @@ info "Configuring (rtsp/rtp/srtp + h264 copy + native aac + fmp4, nothing else).
     --enable-filter=anullsrc,aresample,aformat,anull \
     --extra-cflags='-Os'
 
-info "Building (-j${JOBS} — expect 30-60 min on a Zero 2 W)..."
+info "Building (-j${JOBS} — expect 30-60 min on a Zero 2 W, ~2 min in CI)..."
 make -j"${JOBS}" ffmpeg
 
-sudo mkdir -p "${PREFIX}"
-sudo install -m 755 ffmpeg "${PREFIX}/ffmpeg-static"
-sudo strip "${PREFIX}/ffmpeg-static" 2>/dev/null || true
+${SUDO} mkdir -p "${PREFIX}"
+${SUDO} install -m 755 ffmpeg "${PREFIX}/ffmpeg-static"
+${SUDO} strip "${PREFIX}/ffmpeg-static" 2>/dev/null || true
 
 info "Self-test: the exact features the HomeKit app uses..."
 # prebuffer path: lavfi silence -> native aac -> fragmented mp4
