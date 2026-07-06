@@ -1,0 +1,12 @@
+[Unit]
+Description=pi4cam — keep ffmpeg and its full dependency tree warm in the page cache
+
+[Service]
+Type=oneshot
+# Soft touch (NO locking): pages stay evictable if the kernel truly needs the
+# RAM — this only biases the LRU so a live-view ffmpeg spawn does not reload
+# from the SD card. The FULL ldd closure matters: Debian's ffmpeg links ~150
+# shared libraries (x265, OpenCL, SDL, Pulse…) and warming only libav* left
+# ~100 of them evictable — field-measured with HKSV armed: `ffmpeg -version`
+# took 7.6 s real for 1.5 s CPU, i.e. ~6 s of pure SD page-in per live spawn.
+ExecStart=/bin/sh -c 'vmtouch -tq $(readlink -f /usr/bin/ffmpeg) $(ldd /usr/bin/ffmpeg | grep -o "/[^ ]*" | sort -u) >/dev/null 2>&1 || true'

@@ -13,6 +13,8 @@ import logging
 import os
 import signal
 import sys
+
+import cv2
 import yaml
 
 from .camera_manager import CameraManager
@@ -42,6 +44,11 @@ def load_config() -> dict:
 
 
 def main() -> None:
+    # OpenCV's per-core thread pool buys nothing at lores sizes (320×240 MOG2)
+    # and only contends with the encoder and ffmpeg children for the four
+    # 1 GHz cores (#41).
+    cv2.setNumThreads(1)
+
     config = load_config()
 
     rtsp_cfg = config.get("rtsp", {})
@@ -57,10 +64,12 @@ def main() -> None:
     detector.start()
 
     # Localhost-only control endpoint: the HomeKit app drives the encoder
-    # bitrate to what live viewers negotiate (#47).
+    # bitrate to what live viewers negotiate (#47) and requests an immediate
+    # keyframe when a live session starts (#43).
     control = ControlServer(
         int(config.get("camera", {}).get("control_port", 8990)),
         camera.set_bitrate,
+        camera.force_keyframe,
     )
     control.start()
 

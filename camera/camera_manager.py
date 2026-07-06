@@ -52,6 +52,37 @@ class CameraManager:
     # Exit is slower than entry so car headlights at night can't flip us back.
     IR_ENTRY_FRAMES = 15      # ≈3 s at 5 fps before switching to grayscale
     IR_EXIT_FRAMES = 50       # ≈10 s at 5 fps before returning to colour
+    # AeExposureMode enum (libcamera): biases the AE shutter/gain split. Night
+    # mode uses Long so the budget freed by a relaxed FrameDurationLimits is
+    # spent on shutter time (real light) before analogue gain (noise).
+    _AE_EXPOSURE_NORMAL = 0
+    _AE_EXPOSURE_LONG = 2
+    # NoiseReductionMode enum (libcamera draft): the ISP's hardware denoiser.
+    # Video pipelines default to Fast; night mode switches to HighQuality —
+    # the auto-levels stretch multiplies the gain-8x grain by ~5, and cleaning
+    # it in the ISP is free (hardware) where any software denoise would eat
+    # the Zero 2 W alive. Reverted to Fast by day.
+    _NR_FAST = 1
+    _NR_HIGH_QUALITY = 2
+    # Encoder bitrate floors for the live governor's requests (#47). Field,
+    # 2026-07-05 night: at the 1 Mbps day floor the stretched night image
+    # (noise across the whole frame) macroblocks into mush — two screenshots
+    # seconds apart show the rate control converging from clean to unusable.
+    # Night raises the floor to keep the noisy 1080p encodable; day keeps the
+    # encoder's practical minimum (policy stays in the Node governor).
+    _DAY_MIN_BITRATE = 500_000
+    NIGHT_MIN_BITRATE = 3_000_000
+    # Night auto-levels (the digital AGC every commercial IR camera runs).
+    # The scene's useful signal is found from lores-luma percentiles and
+    # stretched to full range; a static curve cannot do this job — with the
+    # sensor pinned at gain 8x / 41.6 ms, the whole scene lives at luma
+    # ~15-50, i.e. AT the noise floor (field, 2026-07-05).
+    NIGHT_LUT_LOW_PCT = 5     # percentile mapped toward black
+    NIGHT_LUT_HIGH_PCT = 99   # percentile mapped to white
+    NIGHT_LUT_MIN_SPAN = 48   # min stretched range: caps digital gain at ~5x
+    #                           so a pitch-black room can't become pure noise
+    NIGHT_STATS_EMA = 0.15    # per analysed frame (~1-2 s at 5 fps): smooths
+    #                           the percentiles so the exposure never flickers
 
     _instance = None
     _instance_lock = threading.Lock()
@@ -91,6 +122,35 @@ class CameraManager:
         self._ir_streak = 0
         self._ir_last_stats_log = 0.0
         self._MappedArray = None  # picamera2.MappedArray, bound in start()
+
+        # Night brightness — two live controls, applied only while night mode
+        # is latched and reverted by day (see _apply_night_camera):
+        #
+        #  • ir_min_fps  — the REAL lever. At fps (e.g. 30) libcamera pins the
+        #    max exposure to ~1/fps s and the AEC just piles on gain, so an EV
+        #    bias saturates with no effect. Letting the framerate drop to this
+        #    floor when dark lengthens the exposure instead (10 fps → 100 ms →
+        #    ~3× more light) with NO added noise. < fps enables it; >= fps off.
+        #  • ir_exposure — ExposureValue target bias in EV/stops (secondary
+        #    fine-tune; only bites once ir_min_fps has freed shutter headroom).
+        #    0.0 = libcamera default. Clamped to libcamera's ±8 range.
+        self._ir_exposure = max(-8.0, min(8.0, float(self._cfg.get("ir_exposure", 0.0))))
+        self._ir_min_fps = max(1, int(self._cfg.get("ir_min_fps", 10)))
+
+        # ir_gamma — night auto-levels curve shape. Field history: the sensor
+        # saturates at gain 8x / 41.6 ms (mode ceiling) long before an IR-lit
+        # room meters bright, so no exposure control can help. A plain gamma
+        # was milky (lifted the noise floor), a black-anchored gamma was dark
+        # (the whole scene lives AT the noise floor, luma ~15-50) — a static
+        # curve cannot fit both. Instead the night LUT is rebuilt from the
+        # scene's own lores-luma percentiles (auto-levels, EMA-smoothed, gain
+        # capped) and ir_gamma shapes the stretch: out = norm^(1/γ). The LUT
+        # is applied to the main frame's luma in the night callback below.
+        # 1.0 disables the whole brightening (chroma still neutralised).
+        self._ir_gamma = max(1.0, min(5.0, float(self._cfg.get("ir_gamma", 2.2))))
+        self._ir_gamma_lut: np.ndarray | None = None  # rebuilt per analysed frame
+        self._night_low: float | None = None
+        self._night_high: float | None = None
 
         self._picam2 = None
         self._encoder = None
@@ -160,14 +220,19 @@ class CameraManager:
 
         video_cfg = self._picam2.create_video_configuration(**cfg_kwargs)
 
-        if self._rotation:
+        if self._rotation == 180:
             from libcamera import Transform
-            transforms = {
-                90:  Transform(hflip=1, vflip=0),
-                180: Transform(hflip=1, vflip=1),
-                270: Transform(hflip=0, vflip=1),
-            }
-            video_cfg["transform"] = transforms.get(self._rotation, Transform())
+            video_cfg["transform"] = Transform(hflip=1, vflip=1)
+        elif self._rotation:
+            # The Pi ISP has no transposition path: libcamera.Transform only
+            # does hflip/vflip. Mapping 90/270 to a single flip (what v1 did)
+            # produced a silent MIRROR — worse than doing nothing (#32).
+            logger.warning(
+                "rotation: %d is not supported — the Pi ISP can only rotate "
+                "180° (hflip+vflip). Ignoring; mount the camera upright or "
+                "use rotation: 180.",
+                self._rotation,
+            )
 
         self._picam2.configure(video_cfg)
         self._picam2.pre_callback = self._lores_callback
@@ -193,6 +258,11 @@ class CameraManager:
 
         self._last_frame_time = time.monotonic()
         self._picam2.start()
+        # NOTE (#41): buffering=0 is NOT possible here — picamera2's FileOutput
+        # type-gates on io.BufferedIOBase and rejects the raw FileIO that an
+        # unbuffered fdopen returns (RuntimeError, field-hit: crash loop on
+        # start). The default BufferedWriter stays; its per-write memcpy is
+        # the price of the API.
         self._picam2.start_encoder(
             self._encoder,
             FileOutput(os.fdopen(self._pipe_w, "wb")),
@@ -211,6 +281,12 @@ class CameraManager:
         """Return the read-end fd of the H264 pipe. Pass to RtspPublisher."""
         return self._pipe_r
 
+    def _clamp_bitrate(self, bps: int) -> int:
+        """Floor depends on the time of day: the stretched night image costs
+        far more bits than a clean day frame (see NIGHT_MIN_BITRATE)."""
+        floor = self.NIGHT_MIN_BITRATE if self._ir_mode else self._DAY_MIN_BITRATE
+        return min(max(int(bps), floor), self._bitrate)
+
     def set_bitrate(self, bps: int) -> int:
         """
         Change the encoder bitrate live — no restart, no keyframe disruption,
@@ -218,10 +294,10 @@ class CameraManager:
         the rate control follows within one second (#47).
 
         Mechanism only: the bitrate *policy* lives in the HomeKit app, which
-        sees the negotiated sessions. Clamped to [500 kbps, configured
+        sees the negotiated sessions. Clamped to [day/night floor, configured
         bitrate]. Returns the bitrate actually in effect.
         """
-        bps = max(500_000, min(int(bps), self._bitrate))
+        bps = self._clamp_bitrate(bps)
         if self._encoder is None:
             return self._current_bitrate
         if bps != self._current_bitrate:
@@ -232,6 +308,40 @@ class CameraManager:
             except OSError:
                 logger.warning("Live bitrate change failed", exc_info=True)
         return self._current_bitrate
+
+    def force_keyframe(self) -> bool:
+        """
+        Ask the encoder for an immediate IDR frame (live session startup).
+
+        A -c:v copy consumer can only render from a keyframe: forcing one when
+        a viewer connects removes the 0–1 s GOP wait — the trick commercial
+        cameras use for their instant startup (#43). Returns True if the
+        control was accepted.
+        """
+        if self._encoder is None:
+            return False
+        try:
+            self._apply_force_keyframe()
+            logger.info("Keyframe forced (live session start)")
+            return True
+        except OSError:
+            logger.warning("Force-keyframe control rejected", exc_info=True)
+            return False
+
+    def _apply_force_keyframe(self) -> None:
+        from picamera2.encoders import v4l2_encoder as v4l2
+
+        # Fallback CID if the distro's binding doesn't name it:
+        # V4L2_CTRL_CLASS_MPEG | 0x900 base + 229.
+        cid = getattr(v4l2, "V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME", 0x009909E5)
+        ctrl = v4l2.v4l2_ext_control()
+        ctrl.id = cid
+        ctrl.value = 1
+        ctrls = v4l2.v4l2_ext_controls()
+        ctrls.ctrl_class = v4l2.V4L2_CTRL_CLASS_MPEG
+        ctrls.count = 1
+        ctrls.controls = ctypes.pointer(ctrl)
+        fcntl.ioctl(self._encoder.vd, v4l2.VIDIOC_S_EXT_CTRLS, ctrls)
 
     def _apply_bitrate(self, bps: int) -> None:
         """V4L2 ext-control poke on the running encoder's fd (VIDIOC_S_EXT_CTRLS).
@@ -248,6 +358,54 @@ class CameraManager:
         ctrls.count = 1
         ctrls.controls = ctypes.pointer(ctrl)
         fcntl.ioctl(self._encoder.vd, v4l2.VIDIOC_S_EXT_CTRLS, ctrls)
+
+    def _apply_night_camera(self, on: bool) -> None:
+        """Retune the sensor for night, reverting to daylight defaults by day.
+
+        Live libcamera controls applied in one poke, only on the day↔night
+        transition (never per frame) — no reconfigure, and the ISP Saturation
+        is never touched:
+
+        - FrameDurationLimits: relax the max frame duration so the sensor may
+          slow to ir_min_fps when it's dark, lifting the ~1/fps s shutter cap
+          that makes ExposureValue saturate. This is what actually adds photons,
+          and it adds no gain-noise. Paired with AeExposureMode=Long so the AEC
+          spends that budget on shutter time before analogue gain.
+        - ExposureValue: bias the AE target up (only useful once the relaxed
+          shutter ceiling gives the AEC room to reach it).
+
+        Each knob is skipped when its config leaves it at the daylight default,
+        so a plain install is untouched. None-guarded and wrapped so a rejected
+        control can't kill the capture thread.
+        """
+        if self._picam2 is None:
+            return
+        # If a live session is holding the encoder below the night floor when
+        # night falls, re-clamp it now — the governor's next request keeps
+        # day behaviour after the flip back.
+        if on and self._current_bitrate < self.NIGHT_MIN_BITRATE:
+            self.set_bitrate(self._current_bitrate)
+        controls: dict = {}
+        if self._ir_min_fps < self._fps:
+            day_us = round(1e6 / self._fps)
+            night_us = round(1e6 / self._ir_min_fps)
+            controls["FrameDurationLimits"] = (day_us, night_us) if on else (day_us, day_us)
+            controls["AeExposureMode"] = self._AE_EXPOSURE_LONG if on else self._AE_EXPOSURE_NORMAL
+        if self._ir_exposure != 0.0:
+            controls["ExposureValue"] = self._ir_exposure if on else 0.0
+        if self._ir_gamma > 1.0:
+            # The auto-levels stretch needs the cleanest source it can get:
+            # ISP hardware denoise at HighQuality while night mode is active.
+            controls["NoiseReductionMode"] = (
+                self._NR_HIGH_QUALITY if on else self._NR_FAST
+            )
+        if not controls:
+            return
+        try:
+            self._picam2.set_controls(controls)
+            logger.info("Night camera tuning %s → %s", "on" if on else "off", controls)
+        except Exception:
+            logger.warning("Night camera control rejected", exc_info=True)
 
     def get_lores_frame(self, timeout: float = 1.0) -> np.ndarray | None:
         """
@@ -349,17 +507,22 @@ class CameraManager:
             self._last_lores_time = now
             arr = request.make_array("lores")
             if self._ir_grayscale:
-                self._update_night_mode(arr)
+                self._update_night_mode(arr, request)
             y_plane = arr[:self._lores_h, :self._lores_w].copy()
             with self._lores_condition:
                 self._latest_lores_frame = y_plane
                 self._lores_condition.notify_all()
 
-        # Night mode: neutralise the main frame's chroma in place (U and V →
-        # 128 = perfectly grey) before the H264 encoder consumes the buffer.
-        # Stream and snapshot both come out grayscale; ISP stays untouched.
+        # Night mode: brighten the main frame's luma through the gamma LUT and
+        # neutralise its chroma in place (U and V → 128 = perfectly grey)
+        # before the H264 encoder consumes the buffer. Stream and snapshot both
+        # come out brightened grayscale; ISP stays untouched. cv2.LUT writes
+        # into the mapped buffer directly (dst=) — no per-frame allocation.
         if self._ir_mode and self._MappedArray is not None:
             with self._MappedArray(request, "main") as m:
+                if self._ir_gamma_lut is not None:
+                    y = m.array[:self._height]
+                    cv2.LUT(y, self._ir_gamma_lut, dst=y)
                 m.array[self._height:, :] = 128
 
         if (self._snapshot_interval > 0
@@ -370,6 +533,52 @@ class CameraManager:
                 self._snapshot_queue.put_nowait(main_arr)
             except queue.Full:
                 pass  # previous snapshot still pending — skip this frame
+
+    @classmethod
+    def _build_night_lut(cls, low: float, high: float, gamma: float) -> list[int]:
+        """256-entry auto-levels curve: map the scene's own signal range
+        [low, high] (luma percentiles) onto [0, 255], shaped by gamma.
+
+        Below `low` (the noise pedestal) → 0: blacks stay black. Above
+        `high` → 255 (top percentile clips, standard auto-levels). The span
+        is floored at NIGHT_LUT_MIN_SPAN so a pitch-black scene cannot be
+        stretched into pure noise (~5x max digital gain). Pure Python on
+        purpose — 256 entries at analysis rate is nothing, and it stays
+        testable without numpy.
+        """
+        span = max(high - low, float(cls.NIGHT_LUT_MIN_SPAN))
+        inv = 1.0 / gamma
+        lut = []
+        for i in range(256):
+            x = (i - low) / span
+            if x <= 0.0:
+                lut.append(0)
+            else:
+                lut.append(round(255.0 * min(1.0, x) ** inv))
+        return lut
+
+    def _refresh_night_lut(self, lores_arr) -> None:
+        """Rebuild the night LUT from this frame's lores-luma statistics.
+
+        Runs in the camera callback thread (same thread that applies the LUT,
+        so the swap is race-free). The lores luma is never touched by the
+        gamma (only main is), so the statistics always see the raw sensor —
+        no feedback loop. EMA smoothing keeps the picture from flickering as
+        scene content moves through the percentiles.
+        """
+        y = lores_arr[:self._lores_h, :self._lores_w]
+        low = float(np.percentile(y, self.NIGHT_LUT_LOW_PCT))
+        high = float(np.percentile(y, self.NIGHT_LUT_HIGH_PCT))
+        if self._night_low is None or self._night_high is None:
+            self._night_low, self._night_high = low, high
+        else:
+            a = self.NIGHT_STATS_EMA
+            self._night_low += a * (low - self._night_low)
+            self._night_high += a * (high - self._night_high)
+        self._ir_gamma_lut = np.array(
+            self._build_night_lut(self._night_low, self._night_high, self._ir_gamma),
+            dtype=np.uint8,
+        )
 
     @classmethod
     def _is_ir_frame(cls, u_mean: float, u_std: float,
@@ -400,7 +609,7 @@ class CameraManager:
         uniform = u_std < cls.IR_CHROMA_STD_MAX and v_std < cls.IR_CHROMA_STD_MAX
         return uniform and cast > cls.IR_CAST_MIN
 
-    def _update_night_mode(self, lores_arr) -> None:
+    def _update_night_mode(self, lores_arr, request=None) -> None:
         """
         Feed one analysed lores frame to the IR detector. Reads the U/V planes
         of the planar YUV420 array — always untouched colour data, since the
@@ -414,20 +623,49 @@ class CameraManager:
         v_mean, v_std = float(v.mean()), float(v.std())
         is_ir = self._is_ir_frame(u_mean, u_std, v_mean, v_std)
 
-        # Calibration log (beta): one line per minute with the raw chroma
-        # statistics, so thresholds are tuned from journalctl evidence rather
-        # than assumptions about a given LED/lens/AWB combination.
+        # Calibration log (beta): one line every 10 minutes with the raw
+        # chroma statistics, so thresholds are tuned from journalctl evidence
+        # rather than assumptions about a given LED/lens/AWB combination. The
+        # AE metadata tells how the sensor actually responded to the night
+        # tuning (shutter really relaxed? gain pinned?) — ground truth no
+        # reasoning about controls can replace. 10 min ≈ 144 lines/day:
+        # journald-friendly, still plenty to calibrate a new rig overnight
+        # (the full 2026-07-05 validation ran at 1/min).
         now = time.monotonic()
-        if now - self._ir_last_stats_log >= 60.0:
+        if now - self._ir_last_stats_log >= 600.0:
             self._ir_last_stats_log = now
+            ae = ""
+            if request is not None:
+                try:
+                    md = request.get_metadata()
+                    ae = "  exp=%.1fms gain=%.2fx dg=%.2f lux=%.0f" % (
+                        md.get("ExposureTime", 0) / 1000.0,
+                        md.get("AnalogueGain", 0.0),
+                        md.get("DigitalGain", 0.0),
+                        md.get("Lux", 0.0),
+                    )
+                except Exception:
+                    pass  # metadata is diagnostic sugar — never block the vote
+            lut_range = ""
+            if self._night_low is not None and self._night_high is not None:
+                lut_range = "  lut=%.0f→%.0f" % (self._night_low, self._night_high)
             logger.info(
-                "IR stats: u=%.1f ±%.1f  v=%.1f ±%.1f  → frame=%s mode=%s",
+                "IR stats: u=%.1f ±%.1f  v=%.1f ±%.1f  → frame=%s mode=%s%s%s",
                 u_mean, u_std, v_mean, v_std,
                 "IR" if is_ir else "colour",
                 "night" if self._ir_mode else "day",
+                ae, lut_range,
             )
 
         self._apply_ir_vote(is_ir)
+
+        # Night auto-levels: track the scene's real signal range while night
+        # mode is latched; drop the LUT (and stats) the moment day returns.
+        if self._ir_mode and self._ir_gamma > 1.0:
+            self._refresh_night_lut(lores_arr)
+        elif self._ir_gamma_lut is not None:
+            self._ir_gamma_lut = None
+            self._night_low = self._night_high = None
 
     def _apply_ir_vote(self, is_ir: bool) -> None:
         """Hysteresis: flip _ir_mode only after N consecutive contrary votes."""
@@ -443,6 +681,42 @@ class CameraManager:
                 logger.info("Night vision detected → grayscale stream")
             else:
                 logger.info("Daylight detected → colour stream")
+            self._apply_night_camera(is_ir)
+
+    # Snapshot thumbnail size (fixed): HomeKit resizes client-side anyway.
+    _SNAP_W, _SNAP_H = 1280, 720
+
+    def _snapshot_bgr(self, arr):
+        """YUV420 main frame → 1280×720 BGR, resizing BEFORE the colour
+        conversion (#42). Converting at full resolution allocated a 6 MB BGR
+        image only to throw half the pixels away in the very next call —
+        resizing the Y/U/V planes first roughly halves the conversion work
+        and the allocation peak on every snapshot.
+
+        I420 packed layout in the (h·3/2, w) array: each chroma plane spans
+        h/4 array rows (two w/2-wide chroma rows per array row) — reshaped to
+        (h/2, w/2) before resizing. In night mode U/V are already 128
+        (neutralised upstream in the callback); resizing preserves that.
+        Any unexpected layout (stride padding) falls back to the legacy
+        full-resolution path.
+        """
+        h, w = self._height, self._width
+        tw, th = self._SNAP_W, self._SNAP_H
+        if arr.shape != (h * 3 // 2, w) or (w, h) == (tw, th):
+            bgr = cv2.cvtColor(arr, cv2.COLOR_YUV2BGR_I420)
+            return cv2.resize(bgr, (tw, th), interpolation=cv2.INTER_AREA)
+        quarter = h // 4
+        u = arr[h:h + quarter].reshape(h // 2, w // 2)
+        v = arr[h + quarter:h + 2 * quarter].reshape(h // 2, w // 2)
+        small = np.empty((th * 3 // 2, tw), dtype=arr.dtype)
+        small[:th] = cv2.resize(arr[:h], (tw, th), interpolation=cv2.INTER_AREA)
+        small[th:th + th // 4] = cv2.resize(
+            u, (tw // 2, th // 2), interpolation=cv2.INTER_AREA
+        ).reshape(th // 4, tw)
+        small[th + th // 4:] = cv2.resize(
+            v, (tw // 2, th // 2), interpolation=cv2.INTER_AREA
+        ).reshape(th // 4, tw)
+        return cv2.cvtColor(small, cv2.COLOR_YUV2BGR_I420)
 
     def _snapshot_worker(self) -> None:
         """Persistent worker: encodes and writes JPEG snapshots from the queue."""
@@ -456,9 +730,10 @@ class CameraManager:
             try:
                 # In night mode the main frame's chroma was already neutralised
                 # in the camera callback, so this converts to a grey BGR as-is.
-                bgr = cv2.cvtColor(arr, cv2.COLOR_YUV2BGR_I420)
-                thumb = cv2.resize(bgr, (1280, 720), interpolation=cv2.INTER_AREA)
-                ok, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                # JPEG 85: visually identical for a 720p thumbnail, faster to
+                # encode and ~40 % smaller in /dev/shm (#41).
+                bgr = self._snapshot_bgr(arr)
+                ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 if ok:
                     tmp = self._snapshot_path + ".tmp"
                     with open(tmp, "wb") as f:

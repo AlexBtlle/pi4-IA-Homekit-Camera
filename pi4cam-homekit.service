@@ -8,8 +8,13 @@ Requires=mediamtx.service
 [Service]
 Type=simple
 User=__USER__
+# Cap glibc malloc arenas — retained-but-unused memory on a 512 MB board (#41).
+Environment=MALLOC_ARENA_MAX=2
 WorkingDirectory=/opt/pi4cam/homekit
-ExecStart=/usr/bin/node /opt/pi4cam/homekit/dist/main.js
+# Bound the V8 heap: HAP-NodeJS actually uses ~25-40 MB of heap, but an
+# unbounded V8 sizes itself for the machine's RAM and delays GC. The
+# prebuffer's Buffers live off-heap (external) — unaffected by the cap (#41).
+ExecStart=/usr/bin/node --max-old-space-size=96 --max-semi-space-size=2 /opt/pi4cam/homekit/dist/main.js
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=30

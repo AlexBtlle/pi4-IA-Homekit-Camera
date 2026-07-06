@@ -14,16 +14,27 @@ const DEFAULT_SNAPSHOT_PATH = "/dev/shm/pi4cam-snapshot.jpg";
 export class SnapshotProvider {
   readonly snapshotFile: string;
 
+  // Python rewrites the file every snapshot_interval (2-5 s). Way past that,
+  // pi4cam is down and the picture is a lie: better to error — the Home app
+  // then shows the camera as unavailable instead of a frozen frame (#38).
+  private static readonly MAX_AGE_MS = 30_000;
+
   constructor(snapshotFile: string = DEFAULT_SNAPSHOT_PATH) {
     this.snapshotFile = snapshotFile;
   }
 
   async get(): Promise<Buffer> {
-    try {
-      return await fs.readFile(this.snapshotFile);
-    } catch {
-      return this.waitForFirst();
+    const stat = await fs.stat(this.snapshotFile).catch(() => null);
+    if (!stat) {
+      return this.waitForFirst(); // fresh boot: not written yet
     }
+    const ageMs = Date.now() - stat.mtimeMs;
+    if (ageMs > SnapshotProvider.MAX_AGE_MS) {
+      throw new Error(
+        `snapshot is stale (${Math.round(ageMs / 1000)}s old) — is pi4cam running?`,
+      );
+    }
+    return fs.readFile(this.snapshotFile);
   }
 
   private waitForFirst(): Promise<Buffer> {

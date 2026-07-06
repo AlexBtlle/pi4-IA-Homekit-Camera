@@ -12,7 +12,7 @@ No Homebridge, no plugins, no cloud account, no admin dashboard to babysit. The 
 
 ## Features
 
-- **Live streaming** — the Pi's hardware H264 encoder is passed straight through to HomeKit (SRTP, zero re-encoding). Fluid 1080p30 with near-idle CPU.
+- **Live streaming** — the Pi's hardware H264 encoder is passed straight through to HomeKit (SRTP, zero re-encoding). Fluid 1080p30 with near-idle CPU. IPv6 controllers are supported (*beta* — implemented per spec, not yet field-tested on an IPv6-preferred network; reports welcome).
 - **HomeKit Secure Video** — motion-triggered recordings stored in iCloud, viewable directly in the Home app's timeline. A rolling 4-second prebuffer means every clip starts before the motion event.
 - **Smart classification** — People / Animals / Vehicles detection is done by your Apple home hub (Apple TV / HomePod), exactly like commercial HKSV cameras. The Pi just reports motion, cheaply and reliably.
 - **Rich notifications** — motion alerts with a snapshot on your iPhone.
@@ -132,6 +132,17 @@ After the update, open `http://<pi>.local:8080` and check that everything is gre
 
 The video is encoded **once**, in hardware, on the camera. Everything downstream (live stream, recordings, snapshots) reuses that same H264 stream without re-encoding — that's why it stays fluid and light.
 
+### Passthrough design notes
+
+Zero re-encoding is the choice that makes this project viable on a Pi Zero 2 W — and it implies deliberately ignoring part of what HomeKit negotiates. These are known tolerances, shared by the DIY ecosystem (Scrypted, homebridge-camera-ffmpeg…), documented here for transparency:
+
+- **Fixed resolution** — HomeKit picks a resolution from the advertised list (often 640×360 for the grid or remote viewing) but always receives the native stream (1080p by default). iOS scales it client-side.
+- **Bitrate** *(the one negotiated parameter that IS honoured)* — live sessions drive the hardware encoder toward what they negotiate (~2 Mbps remote/cellular) and it returns to the configured ceiling when they leave. On a modest uplink, also consider a `camera.bitrate` of 3–4 Mbps.
+- **H264 profile** — the stream is always High profile regardless of what was negotiated; Apple decoders read it without complaint.
+- **HKSV recording configuration** — the profile/bitrate/iFrameInterval selected by the home hub are not applied (same passthrough reason); iCloud clips weigh whatever the camera encodes.
+- **Ghost live audio** — an AAC-ELD audio block is declared because HomeKit requires one in the negotiation, but no audio packet is ever sent (the camera module has no microphone). The speaker icon in the Home app does nothing.
+- **Snapshots** — always served at 1280×720 whatever size is requested; iOS resizes.
+
 ## Configuration
 
 Everything lives in one file: [`config.yaml`](config.yaml). On an installed system, edit `/opt/pi4cam/config.yaml` directly, then restart the services (`sudo systemctl restart pi4cam pi4cam-homekit`). Re-running `install.sh` never overwrites your values — it only injects keys added by newer versions (an annotated reference is kept at `/opt/pi4cam/config.yaml.dist`).
@@ -141,7 +152,7 @@ Everything lives in one file: [`config.yaml`](config.yaml). On an installed syst
 | `camera.width` × `height` | 1920×1080 | Capture / stream / recording resolution |
 | `camera.fps` | 30 | Frame rate |
 | `camera.bitrate` | 8000000 | H264 bitrate (bit/s) — ~8 Mbps for crisp 1080p30; lower to ~4 Mbps to save bandwidth |
-| `camera.rotation` | 0 | 0 / 90 / 180 / 270 |
+| `camera.rotation` | 0 | 0 / 180 only — the Pi ISP cannot rotate 90°/270° (ignored with a warning) |
 | `camera.full_fov` | true | Use the full sensor area so the lens shows its full angle. Most sensors (IMX219, OV5647…) center-crop in native 1080p mode, narrowing the view; this forces a full-FOV (binned) mode and scales to the output size. Set `false` for the sharper but narrower native crop. |
 | `camera.sharpness` | 1.0 | ISP edge sharpening (0.0–16.0). Try 1.5–2.0 to compensate for lens softness. |
 | `camera.contrast` | 1.0 | ISP contrast (0.0–32.0). |

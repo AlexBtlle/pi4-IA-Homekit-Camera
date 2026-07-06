@@ -6,7 +6,7 @@ set -euo pipefail
 [[ "$EUID" -eq 0 ]] || { echo "Run as root: sudo bash $0" >&2; exit 1; }
 
 echo "==> Arrêt et désactivation des services..."
-for svc in pi4cam-homekit homebridge pi4cam mediamtx; do
+for svc in pi4cam-homekit homebridge pi4cam mediamtx pi4cam-warm.timer pi4cam-warm.service; do
     systemctl stop    "$svc" 2>/dev/null || true
     systemctl disable "$svc" 2>/dev/null || true
 done
@@ -16,6 +16,8 @@ rm -f /etc/systemd/system/pi4cam-homekit.service
 rm -f /etc/systemd/system/homebridge.service
 rm -f /etc/systemd/system/pi4cam.service
 rm -f /etc/systemd/system/mediamtx.service
+rm -f /etc/systemd/system/pi4cam-warm.service
+rm -f /etc/systemd/system/pi4cam-warm.timer
 systemctl daemon-reload
 
 echo "==> Suppression des fichiers de l'application..."

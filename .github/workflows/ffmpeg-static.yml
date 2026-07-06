@@ -1,0 +1,57 @@
+name: ffmpeg-static
+
+# Builds the lean static ffmpeg (see scripts/build-static-ffmpeg.sh) on an
+# arm64 runner inside a Debian bookworm container — same glibc as Raspberry
+# Pi OS, so the binary runs on any 64-bit Pi. On a tag push it is attached
+# to a release that install.sh can download (the mediamtx pattern: users
+# never compile). ~2 min in CI vs 30-60 min on a Zero 2 W.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["ffmpeg-static-*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (arm64, Debian bookworm)
+    runs-on: ubuntu-24.04-arm
+    container: debian:bookworm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build via the project script
+        run: |
+          PREFIX="$PWD/dist" JOBS="$(nproc)" TMPDIR="$PWD" \
+            bash scripts/build-static-ffmpeg.sh
+          mv dist/ffmpeg-static ffmpeg-static-arm64
+
+      - name: Checksum
+        run: |
+          sha256sum ffmpeg-static-arm64 | tee ffmpeg-static-arm64.sha256
+          ls -lh ffmpeg-static-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-static-arm64
+          path: |
+            ffmpeg-static-arm64
+            ffmpeg-static-arm64.sha256
+          if-no-files-found: error
+
+      - name: Release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/ffmpeg-static-')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ffmpeg-static-arm64
+            ffmpeg-static-arm64.sha256
+          body: >
+            Lean static ffmpeg for the pi4cam live/HKSV spawn paths
+            (rtsp/rtp/srtp, h264 copy, native aac, fragmented mp4 — zero
+            external libraries). Built by CI from
+            `scripts/build-static-ffmpeg.sh` on Debian bookworm arm64;
+            runs on any 64-bit Raspberry Pi OS. install.sh downloads and
+            verifies it automatically.

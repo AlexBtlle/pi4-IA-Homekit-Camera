@@ -1,5 +1,5 @@
 [Unit]
-Description=pi4cam — camera stream + AI presence detection
+Description=pi4cam — camera stream + motion detection
 After=network-online.target mediamtx.service
 Wants=network-online.target
 # Wait for mediamtx RTSP server to be ready before starting the publisher
@@ -9,6 +9,10 @@ Requires=mediamtx.service
 Type=simple
 User=__USER__
 SupplementaryGroups=video
+# glibc creates up to 8 malloc arenas per core for threaded processes; each
+# retains freed memory never returned to the OS. Classic embedded tuning —
+# inherited by the child ffmpeg too (#41).
+Environment=MALLOC_ARENA_MAX=2
 WorkingDirectory=/opt/pi4cam
 ExecStart=/opt/pi4cam/venv/bin/python -m camera.main
 Restart=on-failure

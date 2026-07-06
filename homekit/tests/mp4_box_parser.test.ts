@@ -113,4 +113,34 @@ describe("Mp4BoxParser", () => {
     expect(result).toHaveLength(1);
     expect(result[0].type).toBe("moov");
   });
+
+  // Corrupt input (#36): the old parser silently stopped consuming and let
+  // its buffer grow unbounded on every chunk — throwing lets the Prebuffer
+  // recycle ffmpeg instead.
+
+  it("throws on a zero-size box (extends-to-EOF, nonsensical mid-stream)", () => {
+    const b = box("mdat", 4);
+    b.writeUInt32BE(0, 0);
+    expect(() => parser.push(b)).toThrow(/corrupt MP4 box/);
+  });
+
+  it("throws on an absurdly large box size", () => {
+    const b = Buffer.alloc(8);
+    b.writeUInt32BE(0x7fffffff, 0);
+    b.write("mdat", 4, "ascii");
+    expect(() => parser.push(b)).toThrow(/corrupt MP4 box/);
+  });
+
+  it("throws on a size smaller than its own header", () => {
+    const b = Buffer.alloc(8);
+    b.writeUInt32BE(3, 0);
+    b.write("mdat", 4, "ascii");
+    expect(() => parser.push(b)).toThrow(/corrupt MP4 box/);
+  });
+
+  it("throws on a corrupt 64-bit largesize", () => {
+    const b = largeBox("mdat");
+    b.writeUInt32BE(0x10, 8); // high 32 bits → size ≈ 64 GB
+    expect(() => parser.push(b)).toThrow(/corrupt MP4 box/);
+  });
 });

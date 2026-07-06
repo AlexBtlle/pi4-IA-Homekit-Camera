@@ -60,6 +60,24 @@ def test_malformed_body_is_400(server):
     assert calls == []
 
 
+def test_keyframe_endpoint_calls_back():
+    forced = []
+    srv = ControlServer(0, lambda b: b, lambda: forced.append(True) or True)
+    srv.start()
+    try:
+        resp = post(srv.port, "/keyframe", b"")
+        assert forced == [True]
+        assert json.loads(resp.read())["forced"] is True
+    finally:
+        srv.stop()
+
+
+def test_keyframe_endpoint_without_callback(server):
+    srv, calls = server  # fixture wires no force_keyframe
+    resp = post(srv.port, "/keyframe", b"")
+    assert json.loads(resp.read())["forced"] is False
+
+
 # ----------------------------------------------------------------------
 # CameraManager.set_bitrate — clamping (mechanism side)
 # ----------------------------------------------------------------------
@@ -103,3 +121,33 @@ def test_set_bitrate_skips_redundant_changes(monkeypatch):
     cam.set_bitrate(2_000_000)
     cam.set_bitrate(2_000_000)  # same value: no second ioctl
     assert applied == [2_000_000]
+
+
+# ----------------------------------------------------------------------
+# CameraManager.force_keyframe (#43)
+# ----------------------------------------------------------------------
+
+def test_force_keyframe_applies(monkeypatch):
+    cam = make_manager()
+    poked = []
+    monkeypatch.setattr(cam, "_apply_force_keyframe", lambda: poked.append(True))
+    assert cam.force_keyframe() is True
+    assert poked == [True]
+
+
+def test_force_keyframe_noop_without_encoder(monkeypatch):
+    cam = CameraManager({"camera": {"bitrate": 8_000_000}})
+    monkeypatch.setattr(
+        cam, "_apply_force_keyframe",
+        lambda: (_ for _ in ()).throw(AssertionError("must not be called")),
+    )
+    assert cam.force_keyframe() is False
+
+
+def test_force_keyframe_survives_driver_rejection(monkeypatch):
+    cam = make_manager()
+    monkeypatch.setattr(
+        cam, "_apply_force_keyframe",
+        lambda: (_ for _ in ()).throw(OSError("EINVAL")),
+    )
+    assert cam.force_keyframe() is False  # logged, never raises

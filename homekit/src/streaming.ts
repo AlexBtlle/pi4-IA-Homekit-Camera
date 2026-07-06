@@ -18,6 +18,7 @@ import { SnapshotProvider } from "./snapshot";
 
 interface SessionInfo {
   address: string;
+  ipv6: boolean; // controller negotiated IPv6 (request.addressVersion) — #44
   videoPort: number;
   videoReturnPort: number;
   videoSSRC: number;
@@ -27,16 +28,27 @@ interface SessionInfo {
 /**
  * Reserve a free UDP port by binding to 0 and reading the assigned port.
  * HomeKit needs a return port for RTCP even though we only push video.
+ * The socket family must match the controller's addressVersion: an IPv6
+ * controller sends RTCP to a port that only exists if it was bound udp6 (#44).
  */
-function reservePort(): Promise<number> {
+function reservePort(type: "udp4" | "udp6"): Promise<number> {
   return new Promise((resolve, reject) => {
-    const socket = dgram.createSocket("udp4");
+    const socket = dgram.createSocket(type);
     socket.once("error", reject);
     socket.bind(0, () => {
       const port = (socket.address() as { port: number }).port;
       socket.close(() => resolve(port));
     });
   });
+}
+
+/**
+ * Format the controller address for an ffmpeg URL: IPv6 literals need
+ * brackets (`srtp://[fe80::…]:port`) — raw interpolation produces an invalid
+ * URL and a black tile with no usable error (#44, beta).
+ */
+export function srtpHost(address: string, ipv6: boolean): string {
+  return ipv6 ? `[${address}]` : address;
 }
 
 /**
@@ -55,6 +67,8 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     private readonly rtspUrl: string,
     private readonly snapshots: SnapshotProvider,
     private readonly bitrate?: BitrateGovernor,
+    private readonly forceKeyframe?: () => void,
+    private readonly ffmpegPath: string = "ffmpeg",
   ) {}
 
   // ----------------------------------------------------------------------
@@ -83,13 +97,20 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     callback: PrepareStreamCallback,
   ): Promise<void> {
     try {
+      // IPv6 controllers (IPv6-preferred networks, some ISPs) negotiate an
+      // IPv6 target — the return ports must be bound udp6 or RTCP never
+      // lands. On a v4-only box the udp6 bind fails fast (EAFNOSUPPORT) and
+      // the error is surfaced instead of a silent black tile (#44, beta).
+      const ipv6 = request.addressVersion === "ipv6";
+      const udpType = ipv6 ? "udp6" : "udp4";
       const videoSSRC = CameraController.generateSynchronisationSource();
-      const videoReturnPort = await reservePort();
-      const audioReturnPort = await reservePort();
+      const videoReturnPort = await reservePort(udpType);
+      const audioReturnPort = await reservePort(udpType);
       const audioSSRC = CameraController.generateSynchronisationSource();
 
       this.pendingSessions.set(request.sessionID, {
         address: request.targetAddress,
+        ipv6,
         videoPort: request.video.port,
         videoReturnPort,
         videoSSRC,
@@ -170,7 +191,8 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     console.log(
       `[stream ${sessionID.slice(0, 8)}] negotiated ` +
         `${request.video.width}x${request.video.height}@${request.video.fps} ` +
-        `max ${request.video.max_bit_rate} kbps`,
+        `max ${request.video.max_bit_rate} kbps` +
+        (session.ipv6 ? " over IPv6 (beta)" : ""),
     );
     this.bitrate?.setSession(sessionID, request.video.max_bit_rate);
 
@@ -180,9 +202,6 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       "-hide_banner",
       "-loglevel",
       "error",
-      // Program-friendly progress on stdout → we know when frames start flowing.
-      "-progress",
-      "pipe:1",
       // Low-latency input: mediamtx's RTSP SDP carries the H264 codec params,
       // so ffmpeg needs almost no probing — start copying at the first keyframe
       // instead of buffering/analysing for up to 5 s.
@@ -194,10 +213,9 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       "0",
       "-probesize",
       "32",
-      // Socket I/O timeout (µs): a hung RTSP source makes ffmpeg exit
-      // instead of leaving a silently frozen live session behind (#34).
-      "-timeout",
-      "10000000",
+      // NO "-timeout" here: field-measured, it adds 2-4 s to the RTSP
+      // connection setup on the Pi's ffmpeg (#43). A hung source is covered
+      // by iOS closing the session (HAP teardown kills this process).
       "-rtsp_transport",
       "tcp",
       "-i",
@@ -217,41 +235,62 @@ export class StreamingDelegate implements CameraStreamingDelegate {
       "AES_CM_128_HMAC_SHA1_80",
       "-srtp_out_params",
       srtpParams,
-      `srtp://${session.address}:${session.videoPort}` +
+      `srtp://${srtpHost(session.address, session.ipv6)}:${session.videoPort}` +
         `?rtcpport=${session.videoReturnPort}&pkt_size=${mtu}`,
     ];
 
-    const ff = spawn("ffmpeg", args);
+    const t0 = performance.now();
+    const ff = spawn(this.ffmpegPath, args);
     this.ongoingSessions.set(sessionID, ff);
 
-    let started = false;
-    const ready = () => {
-      if (!started) {
-        started = true;
-        callback();
-      }
-    };
-    // ffmpeg writes progress lines once frames flow → the stream is live.
-    ff.stdout.on("data", ready);
-    // Fallback: if no progress arrives quickly, ack anyway so HomeKit proceeds.
-    const readyTimer = setTimeout(ready, 1500);
+    // Instrumentation (#43): splits the START→mediamtx-subscribe gap into
+    // "node queued the process" (this line) vs "exec + linking + RTSP
+    // handshake" (mediamtx's 'is reading' line). Field data 2026-07-05
+    // showed the full gap at 5-17 s on a busy Zero 2 W — this tells which
+    // half to attack next.
+    ff.once("spawn", () =>
+      console.log(
+        `[stream ${sessionID.slice(0, 8)}] ffmpeg spawned ` +
+          `+${Math.round(performance.now() - t0)} ms`,
+      ),
+    );
+
+    // Ack the START immediately: iOS shows its spinner until SRTP packets
+    // arrive regardless — the old wait-for-progress (with a 1.5 s fallback
+    // that fired on nearly every cold start) only delayed the moment iOS
+    // starts listening (#43, audit L2).
+    callback();
+
+    // The instant-startup trick (#43): ask the encoder for an immediate IDR
+    // instead of letting the viewer wait out the GOP. A salvo, because the
+    // keyframe only helps once OUR ffmpeg is subscribed to mediamtx — and
+    // field logs (2026-07-05) show that under load the subscribe lands
+    // anywhere from 4 to 17 s after START, not the ~2 s first assumed: the
+    // salvo now covers that whole window. Each keyframe is a ~100 KB
+    // one-off — eight of them spread over 20 s is invisible, and any that
+    // fire after the session closed are cancelled below.
+    this.forceKeyframe?.();
+    const keyframeSalvo = [1000, 2000, 3000, 5000, 8000, 12000, 16000, 20000].map(
+      (ms) => setTimeout(() => this.forceKeyframe?.(), ms),
+    );
 
     ff.stderr.on("data", (d: Buffer) =>
       console.error(`[stream ${sessionID.slice(0, 8)}] ${d.toString().trim()}`),
     );
-    ff.on("error", (e) => {
-      console.error("[stream] ffmpeg spawn error:", e.message);
-      clearTimeout(readyTimer);
-      if (!started) {
-        started = true;
-        callback(e);
-      }
-    });
+    ff.on("error", (e) =>
+      console.error("[stream] ffmpeg spawn error:", e.message),
+    );
     ff.on("close", (code) => {
-      clearTimeout(readyTimer);
-      this.ongoingSessions.delete(sessionID);
+      keyframeSalvo.forEach(clearTimeout);
+      const wasOngoing = this.ongoingSessions.delete(sessionID);
       if (code !== 0 && code !== null) {
         console.error(`[stream ${sessionID.slice(0, 8)}] ffmpeg exited ${code}`);
+        if (wasOngoing) {
+          // ffmpeg died mid-session (a HAP-initiated stop removes the session
+          // first, then SIGKILLs → code null). Tell the controller, or iOS
+          // keeps a frozen tile until the user closes it by hand (#38).
+          this.controller?.forceStopStreamingSession(sessionID);
+        }
       }
     });
   }

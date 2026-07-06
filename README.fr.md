@@ -12,7 +12,7 @@ Pas de Homebridge, pas de plugin, pas de compte cloud, pas d'interface d'adminis
 
 ## Fonctionnalités
 
-- **Flux en direct** — le H264 matériel du Pi est transmis tel quel à HomeKit (SRTP, zéro ré-encodage). 1080p30 fluide, CPU quasiment au repos.
+- **Flux en direct** — le H264 matériel du Pi est transmis tel quel à HomeKit (SRTP, zéro ré-encodage). 1080p30 fluide, CPU quasiment au repos. Les contrôleurs IPv6 sont pris en charge (*bêta* — implémenté selon la spec, pas encore validé sur un réseau IPv6-preferred ; retours bienvenus).
 - **HomeKit Secure Video** — enregistrements déclenchés par le mouvement, stockés dans iCloud, lisibles directement dans l'historique de l'app Maison. Un prébuffer glissant de 4 secondes fait démarrer chaque clip avant l'événement.
 - **Classification intelligente** — la détection Personnes / Animaux / Véhicules est faite par votre concentrateur Apple (Apple TV / HomePod), exactement comme les caméras HKSV du commerce. Le Pi se contente de signaler le mouvement, de façon fiable et économe.
 - **Notifications riches** — alertes de mouvement avec snapshot sur l'iPhone.
@@ -133,6 +133,17 @@ Après la mise à jour, ouvrez `http://<pi>.local:8080` et vérifiez que tout es
 
 La vidéo est encodée **une seule fois**, en matériel, sur la caméra. Tout ce qui suit (direct, enregistrements, snapshots) réutilise ce même flux H264 sans ré-encodage — c'est ce qui rend l'ensemble fluide et léger.
 
+### Les limites assumées du passthrough
+
+Le zéro ré-encodage est le choix qui rend le projet viable sur Pi Zero 2 W — et il implique d'ignorer délibérément une partie de ce que HomeKit négocie. Ce sont des tolérances connues, partagées par tout l'écosystème DIY (Scrypted, homebridge-camera-ffmpeg…), documentées ici par transparence :
+
+- **Résolution fixe** — HomeKit choisit une résolution dans la liste annoncée (souvent 640×360 en grille ou à distance) mais reçoit toujours le flux natif (1080p par défaut). iOS redimensionne côté client.
+- **Débit** *(le seul paramètre négocié qui EST honoré)* — les sessions live pilotent l'encodeur matériel vers ce qu'elles négocient (~2 Mbps en distant/cellulaire), et il remonte au plafond configuré quand elles se ferment. Sur un uplink modeste, envisager aussi un `camera.bitrate` de 3-4 Mbps.
+- **Profil H264** — le flux est toujours en High profile quel que soit le profil négocié ; les décodeurs Apple le lisent sans broncher.
+- **Configuration d'enregistrement HKSV** — le profil/bitrate/iFrameInterval sélectionnés par le concentrateur ne sont pas appliqués (même raison passthrough) ; les clips iCloud pèsent ce que la caméra encode.
+- **Audio live fantôme** — un bloc audio AAC-ELD est déclaré parce que HomeKit en exige un dans la négociation, mais aucun paquet audio n'est jamais émis (le module caméra n'a pas de micro). L'icône haut-parleur de l'app Maison ne produit rien.
+- **Snapshots** — toujours servis en 1280×720 quelle que soit la taille demandée ; iOS redimensionne.
+
 ## Configuration
 
 Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Sur un système installé, modifiez directement `/opt/pi4cam/config.yaml` puis redémarrez les services (`sudo systemctl restart pi4cam pi4cam-homekit`). Relancer `install.sh` n'écrase jamais vos valeurs — il n'ajoute que les clés introduites par les nouvelles versions (une référence annotée est conservée dans `/opt/pi4cam/config.yaml.dist`).
@@ -142,7 +153,7 @@ Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Sur un système 
 | `camera.width` × `height` | 1920×1080 | Résolution capture / direct / enregistrement |
 | `camera.fps` | 30 | Cadence d'images |
 | `camera.bitrate` | 8000000 | Débit H264 (bit/s) — ~8 Mbps pour un 1080p30 net ; descendre à ~4 Mbps pour économiser la bande passante |
-| `camera.rotation` | 0 | 0 / 90 / 180 / 270 |
+| `camera.rotation` | 0 | 0 / 180 uniquement — l'ISP du Pi ne sait pas pivoter à 90°/270° (valeur ignorée avec un avertissement) |
 | `camera.full_fov` | true | Utilise toute la surface du capteur pour exploiter l'angle complet de l'objectif. La plupart des capteurs (IMX219, OV5647…) recadrent au centre en mode 1080p natif, ce qui rétrécit le champ ; cette option force un mode pleine vue (binned) puis redimensionne à la résolution de sortie. Mettre `false` pour le recadrage natif, plus net mais plus serré. |
 | `camera.sharpness` | 1.0 | Accentuation ISP (0.0–16.0). Essayer 1.5–2.0 pour compenser la mollesse de l'objectif. |
 | `camera.contrast` | 1.0 | Contraste ISP (0.0–32.0). |

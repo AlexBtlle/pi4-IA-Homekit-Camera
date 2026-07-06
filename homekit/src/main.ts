@@ -30,14 +30,30 @@ import { RecordingDelegate } from "./recording";
 import { MotionService } from "./motion";
 import { QrWebServer } from "./qrweb";
 
+/** App version straight from package.json — the single source of truth.
+ *  dist/main.js lives one level below it, both in-repo and in /opt/pi4cam. */
+function appVersion(): string {
+  try {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"),
+    );
+    return typeof pkg.version === "string" ? pkg.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
 function main(): void {
   const config = loadConfig();
   const pairing = loadPairing();
 
   // HAP-NodeJS persists pairing state here; keep it next to pairing.json so a
-  // single directory holds all the accessory's identity.
+  // single directory holds all the accessory's identity. Owner-only (0700):
+  // AccessoryInfo.*.json inside contains the accessory's Ed25519 PRIVATE key —
+  // the camera's cryptographic identity, more sensitive than the PIN (#35).
   const persistDir = path.join(homekitDir(), "persist");
-  fs.mkdirSync(persistDir, { recursive: true });
+  fs.mkdirSync(persistDir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(persistDir, 0o700); // mkdirSync mode is ignored if it existed
   HAPStorage.setCustomStoragePath(persistDir);
 
   const accessoryUUID = uuid.generate(`pi4cam:${pairing.username}`);
@@ -48,7 +64,7 @@ function main(): void {
     .setCharacteristic(Characteristic.Manufacturer, "pi4-IA-Homekit-Camera")
     .setCharacteristic(Characteristic.Model, "Raspberry Pi Camera")
     .setCharacteristic(Characteristic.SerialNumber, pairing.username)
-    .setCharacteristic(Characteristic.FirmwareRevision, "1.4.0");
+    .setCharacteristic(Characteristic.FirmwareRevision, appVersion());
 
   const snapshots = new SnapshotProvider(config.snapshotPath);
   // Dynamic bitrate (#47): drive the camera's encoder toward what live
@@ -64,12 +80,22 @@ function main(): void {
       (e) => console.error("[bitrate] control endpoint unreachable:", e.message),
     );
   }, config.bitrateKbps);
+  // Instant startup (#43): ask the camera for an immediate keyframe when a
+  // live session opens, instead of waiting out the GOP.
+  const forceKeyframe = () => {
+    fetch(`${config.cameraControlUrl}/keyframe`, { method: "POST" }).catch(
+      (e) => console.error("[stream] keyframe request failed:", e.message),
+    );
+  };
+  console.log(`[main] ffmpeg for live/HKSV: ${config.ffmpegPath}`);
   const streamingDelegate = new StreamingDelegate(
     config.rtspUrl,
     snapshots,
     bitrateGovernor,
+    forceKeyframe,
+    config.ffmpegPath,
   );
-  const recordingDelegate = new RecordingDelegate(config.rtspUrl);
+  const recordingDelegate = new RecordingDelegate(config.rtspUrl, config.ffmpegPath);
 
   // Standard resolutions in descending order. Only those at or below the
   // configured native resolution are advertised — with -c:v copy the stream

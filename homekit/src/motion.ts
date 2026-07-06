@@ -6,8 +6,8 @@ import { CameraController, Characteristic } from "@homebridge/hap-nodejs";
  *   POST /motion  → MotionSensor active for `timeoutSec`, then auto-reset.
  *
  * The MotionSensor lives on the CameraController (sensors.motion), so the same
- * trigger that fires the iOS notification will also arm HKSV recording once the
- * recording delegate is wired up (Jalon 2).
+ * trigger that fires the iOS notification also starts the HKSV recording via
+ * the recording delegate.
  */
 export class MotionService {
   private server?: http.Server;
@@ -27,6 +27,9 @@ export class MotionService {
 
   start(): void {
     this.server = http.createServer((req, res) => {
+      // A request aborted mid-body emits 'error' — unhandled, that exception
+      // would take the whole HomeKit process down (#38).
+      req.on("error", () => res.destroy());
       if (req.method === "POST" && req.url === "/motion") {
         // Drain the body, then trigger.
         req.on("data", () => {});
@@ -42,6 +45,12 @@ export class MotionService {
         res.writeHead(404);
         res.end();
       }
+    });
+
+    // EADDRINUSE (another instance, another service on the port) must log,
+    // not crash-loop the service — HomeKit still works without the sensor.
+    this.server.on("error", (e) => {
+      console.error(`[motion] server error: ${e.message} — motion endpoint unavailable`);
     });
 
     // Bind to loopback only — this endpoint must never be reachable off-box.

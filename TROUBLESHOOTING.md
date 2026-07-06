@@ -134,11 +134,19 @@ the wait for the next keyframe plus `ffmpeg` startup.
 - **GOP / keyframe.** The encoder emits a keyframe every 1 s (`iperiod = fps` in
   `camera_manager.py`). Shorter GOP = faster first frame; don't raise it without
   reason (it lengthens the time-to-first-frame).
-- **Cold vs warm start.** The *first* live view after an idle period is slower
-  (~5 s) than an immediate re-open (~2 s). When HKSV isn't armed, no `ffmpeg`
-  runs, so its libraries are cold-loaded from the SD card on first launch. When
-  HKSV *is* armed (you're away), the prebuffer `ffmpeg` runs continuously →
-  libraries stay warm → the live view is fast. This is expected.
+- **The ffmpeg startup tax.** Debian's ffmpeg links ~150 shared libraries;
+  spawning it costs ~1.7 s of linking CPU on a quiet Zero 2 W — and **5-8 s**
+  when memory is tight (HKSV armed), where the process stalls in reclaim
+  while mapping ~50 MB of private pages (field-measured: 7.6 s real for
+  1.5 s CPU with the page cache 100 % warm). Mitigations shipped: the
+  **`pi4cam-warm.timer`** keeps ffmpeg's full dependency tree soft-cached,
+  and the app **forces encoder keyframes** (salvo over the first 20 s) so
+  the viewer never waits out the GOP once ffmpeg connects. The real cure is
+  the **lean static ffmpeg**: run `bash scripts/build-static-ffmpeg.sh` once
+  on the Pi (~45 min) — it installs `/opt/pi4cam/bin/ffmpeg-static`
+  (RTSP/RTP/SRTP/H264-copy/AAC only, zero external libraries, ~0.2 s
+  startup), which the app auto-detects on restart (it logs its choice:
+  `[main] ffmpeg for live/HKSV: …`). To revert, delete that file.
 
 Diagnose the cold-start theory (optional):
 
@@ -148,8 +156,9 @@ vmtouch -v $(readlink -f /usr/bin/ffmpeg /usr/lib/aarch64-linux-gnu/libav*.so.*)
 # open the live view once, then re-run: residency should jump toward 100%
 ```
 
-Locking the libraries in RAM (`vmtouch -l`) would remove the cold start but costs
-tens of MB of RAM on a 512 MB board — not recommended on the Zero 2 W.
+Hard-locking the libraries in RAM (`vmtouch -l`) is still not recommended on a
+512 MB board — the shipped timer uses a soft touch precisely so the kernel can
+reclaim those pages whenever it genuinely needs them.
 
 **If the stream never appears at all:**
 
@@ -159,6 +168,14 @@ ffprobe rtsp://127.0.0.1:8554/camera   # run ON the Pi (RTSP is localhost-only)
 
 Should report `h264, 1920x1080`. If it fails, the problem is upstream (`pi4cam`
 or `mediamtx`), not HomeKit — check their logs.
+
+**Black tile on an IPv6 network (beta):** when the iPhone/hub negotiates the
+live stream over IPv6, the session log shows `negotiated … over IPv6 (beta)`.
+That path (udp6 return ports + bracketed ffmpeg URL) is implemented per spec
+but not yet field-validated. If the tile stays black only on IPv6-preferred
+networks, check `journalctl -u pi4cam-homekit` for `prepareStream failed`
+(the Pi may have IPv6 disabled — the error is deliberate and explicit) and
+please open an issue with the log lines.
 
 ---
 
@@ -227,6 +244,31 @@ stops car headlights from flipping the mode at night).
 
 - **Transitions logged**: look for `Night vision detected → grayscale stream` /
   `Daylight detected → colour stream` in `journalctl -u pi4cam`.
+- **Image too dark at night?** Three knobs, in the order to try them:
+  1. `camera.ir_gamma` (default `2.2`) — **night auto-levels**: while night
+     mode is active, the scene's real signal range is measured continuously
+     (lores-luma percentiles, flicker-smoothed, digital gain capped at ~5x)
+     and stretched to full scale before encoding — stream, HKSV and snapshot
+     all get it, and it works even with the sensor fully saturated. This is
+     the digital AGC every commercial IR camera runs; static curves cannot do
+     the job (a deep-night scene lives entirely at luma ~15-50, at the noise
+     floor — field-measured). The value shapes the curve: higher = brighter
+     shadows. `2.2` fits most scenes; `1.0` disables. The periodic
+     `IR stats … lut=low→high` log line (every 10 min) shows the measured
+     range and the sensor's real exposure/gain — the calibration evidence.
+  2. `camera.ir_min_fps` (default `10`) — **real light**: lets the framerate
+     drop when dark so the exposure lengthens (at the configured fps libcamera
+     caps the shutter at ~1/fps s and the AE can only add gain). No added
+     noise; costs night framerate (motion blur) and a longer keyframe interval.
+     Note the sensor mode has its own exposure ceiling — going absurdly low
+     (1 fps) stops helping once that ceiling is hit. `>= fps` disables.
+  3. `camera.ir_exposure` (EV bias, `+1` = 2× target) — fine-tune only; with a
+     saturated sensor it does nothing (field-confirmed: EV +8, zero change).
+
+  Edit `/opt/pi4cam/config.yaml`, `sudo systemctl restart pi4cam`, and watch
+  `journalctl -u pi4cam` — `Night camera tuning on → …` confirms the controls
+  applied, and the per-minute `IR stats: … exp=…ms gain=…x` line shows how the
+  sensor actually responded (whether the shutter and gain really moved).
 - **Never enters grayscale at night?** The AWB may be cancelling the cast more
   aggressively than the thresholds assume. The detector constants live at the
   top of `camera/camera_manager.py` (`IR_CHROMA_STD_MAX`, `IR_CAST_MIN`).
@@ -269,6 +311,10 @@ losing its link to existing HKSV history.
 sudo tar czf pi4cam-pairing-backup.tgz -C /opt/pi4cam/homekit pairing.json persist
 # then scp/copy pi4cam-pairing-backup.tgz somewhere safe
 ```
+
+> ⚠️ This archive contains the accessory's **Ed25519 private key** (in
+> `persist/AccessoryInfo.*.json`) — anyone holding it can impersonate the
+> camera. Store the backup like a password, not like a config file.
 
 **Restore onto a freshly imaged card** (after running `install.sh`, which
 generates *new* secrets — restore over them so the accessory keeps its identity

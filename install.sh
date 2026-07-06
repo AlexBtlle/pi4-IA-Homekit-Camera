@@ -9,18 +9,18 @@ RUN_USER="${SUDO_USER:-pi}"
 
 MEDIAMTX_VERSION_OVERRIDE="${MEDIAMTX_VERSION:-}"
 
+# -----------------------------------------------------------------------
+# Helpers — defined before any use (the arch check below calls fatal)
+# -----------------------------------------------------------------------
+info()  { echo "==> $*"; }
+fatal() { echo "ERROR: $*" >&2; exit 1; }
+
 case "$(uname -m)" in
     aarch64) MEDIAMTX_ARCH="linux_arm64v8" ;;
     armv7l)  MEDIAMTX_ARCH="linux_arm7"    ;;
     x86_64)  MEDIAMTX_ARCH="linux_amd64"   ;;
     *) fatal "Unsupported architecture: $(uname -m)" ;;
 esac
-
-# -----------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------
-info()  { echo "==> $*"; }
-fatal() { echo "ERROR: $*" >&2; exit 1; }
 
 [[ "$EUID" -eq 0 ]] || fatal "Run as root: sudo bash $0"
 
@@ -58,6 +58,7 @@ apt-get install -y \
     gnupg \
     lsb-release \
     jq \
+    vmtouch \
     avahi-daemon
 
 # numpy and opencv (cv2) come from apt above — prebuilt pip wheels are
@@ -127,6 +128,50 @@ else
 fi
 
 # -----------------------------------------------------------------------
+# 3b. Lean static ffmpeg — instant live startup (#43/#49)
+# -----------------------------------------------------------------------
+# Debian's ffmpeg links ~150 shared libraries and costs 5-8 s just to START
+# on a memory-pressured 512 MB Pi; the lean build starts in ~0.2 s (x61,
+# field-measured). Prebuilt by CI (.github/workflows/ffmpeg-static.yml) from
+# scripts/build-static-ffmpeg.sh and published as a release. Every failure
+# path here is SOFT: no release yet, offline, non-arm64, bad checksum — the
+# HomeKit app auto-detects the binary and falls back to the system ffmpeg,
+# so the install always works. Users never compile anything.
+FFSTATIC="${INSTALL_DIR}/bin/ffmpeg-static"
+if [[ "$(uname -m)" != "aarch64" ]]; then
+    info "Lean ffmpeg: prebuilt only for arm64 — using the system ffmpeg."
+    info "  (optional: build it locally with scripts/build-static-ffmpeg.sh)"
+elif [[ -x "${FFSTATIC}" ]]; then
+    info "Lean ffmpeg already installed at ${FFSTATIC}, skipping."
+    info "  (delete it and re-run install.sh to fetch a newer release)"
+else
+    info "Fetching the prebuilt lean ffmpeg (instant live startup)..."
+    FF_TAG="$(curl -fsSL \
+        "https://api.github.com/repos/AlexBtlle/pi4-IA-Homekit-Camera/releases" \
+        | jq -r '[.[] | select(.tag_name | startswith("ffmpeg-static-"))][0].tag_name // empty' \
+        || true)"
+    if [[ -z "${FF_TAG}" ]]; then
+        info "No ffmpeg-static release available — using the system ffmpeg (slower live startup)."
+    else
+        FF_URL="https://github.com/AlexBtlle/pi4-IA-Homekit-Camera/releases/download/${FF_TAG}"
+        FF_TMP="$(mktemp -d)"
+        if curl -fsSL "${FF_URL}/ffmpeg-static-arm64" -o "${FF_TMP}/ffmpeg-static" \
+           && curl -fsSL "${FF_URL}/ffmpeg-static-arm64.sha256" -o "${FF_TMP}/sha256" \
+           && [[ "$(sha256sum "${FF_TMP}/ffmpeg-static" | awk '{print $1}')" \
+                 == "$(awk '{print $1}' "${FF_TMP}/sha256")" ]] \
+           && chmod +x "${FF_TMP}/ffmpeg-static" \
+           && "${FF_TMP}/ffmpeg-static" -version >/dev/null 2>&1; then
+            mkdir -p "${INSTALL_DIR}/bin"
+            install -m 755 "${FF_TMP}/ffmpeg-static" "${FFSTATIC}"
+            info "Lean ffmpeg ${FF_TAG} installed — live sessions start in ~0.2 s."
+        else
+            info "Download or verification failed — using the system ffmpeg (slower live startup)."
+        fi
+        rm -rf "${FF_TMP}"
+    fi
+fi
+
+# -----------------------------------------------------------------------
 # 4. Project files
 # -----------------------------------------------------------------------
 info "Deploying project files to ${INSTALL_DIR}..."
@@ -181,10 +226,12 @@ info "Python dependencies installed."
 # -----------------------------------------------------------------------
 info "Building the HomeKit app (npm ci + tsc)..."
 pushd "${INSTALL_DIR}/homekit" >/dev/null
+# `|| true` inside the group: with pipefail, grep -v exits 1 when EVERY line
+# was filtered (or npm printed nothing) — that must not abort the install.
 if [[ -f package-lock.json ]]; then
-    npm ci --no-audit --no-fund 2>&1 | grep -v "npm warn deprecated"
+    npm ci --no-audit --no-fund 2>&1 | { grep -v "npm warn deprecated" || true; }
 else
-    npm install --no-audit --no-fund 2>&1 | grep -v "npm warn deprecated"
+    npm install --no-audit --no-fund 2>&1 | { grep -v "npm warn deprecated" || true; }
 fi
 npm run build
 popd >/dev/null
@@ -194,20 +241,29 @@ popd >/dev/null
 PAIRING="${INSTALL_DIR}/homekit/pairing.json"
 if [[ ! -f "${PAIRING}" ]]; then
     info "Generating HomeKit pairing secrets..."
+    # `secrets` (CSPRNG), not `random` (predictable Mersenne Twister) — these
+    # ARE security material. HAP also rejects a list of trivial PINs outright
+    # (the accessory would fail to publish): re-draw if one comes up.
     PIN="$(python3 -c "
-import random
-d = [random.randint(0,9) for _ in range(8)]
-print(f\"{''.join(map(str,d[:3]))}-{''.join(map(str,d[3:5]))}-{''.join(map(str,d[5:]))}\")
+import secrets
+BANNED = {'000-00-000','111-11-111','222-22-222','333-33-333','444-44-444',
+          '555-55-555','666-66-666','777-77-777','888-88-888','999-99-999',
+          '123-45-678','876-54-321'}
+while True:
+    d = ''.join(str(secrets.randbelow(10)) for _ in range(8))
+    pin = f'{d[:3]}-{d[3:5]}-{d[5:]}'
+    if pin not in BANNED:
+        print(pin); break
 ")"
     MAC="$(python3 -c "
-import random
-m = [random.randint(0,255) for _ in range(6)]
+import secrets
+m = list(secrets.token_bytes(6))
 m[0] = (m[0] & 0xFE) | 0x02   # locally administered, unicast
 print(':'.join(f'{b:02X}' for b in m))
 ")"
     SETUP_ID="$(python3 -c "
-import random, string
-print(''.join(random.choices(string.ascii_uppercase + string.digits, k=4)))
+import secrets, string
+print(''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(4)))
 ")"
     cat > "${PAIRING}" <<EOF
 {
@@ -224,6 +280,10 @@ else
 fi
 
 chown -R "${RUN_USER}:${RUN_USER}" "${INSTALL_DIR}"
+# The homekit dir holds the accessory's identity: pairing.json (PIN) and
+# persist/ (HAP Ed25519 private key, written 644 by HAP-NodeJS). Strip world
+# access on every run so existing installs get fixed too (#35).
+chmod -R o-rwx "${INSTALL_DIR}/homekit"
 usermod -aG video "${RUN_USER}" || true
 
 # -----------------------------------------------------------------------
@@ -243,8 +303,15 @@ sed "s/__USER__/${RUN_USER}/" "${SRC_DIR}/pi4cam.service" \
 sed "s/__USER__/${RUN_USER}/" "${SRC_DIR}/pi4cam-homekit.service" \
     > /etc/systemd/system/pi4cam-homekit.service
 
+# warm-cache timer: keeps ffmpeg's libraries in the page cache so live-view
+# spawns skip the SD reload (soft vmtouch, pages remain evictable)
+cp "${SRC_DIR}/pi4cam-warm.service" /etc/systemd/system/
+cp "${SRC_DIR}/pi4cam-warm.timer" /etc/systemd/system/
+
 systemctl daemon-reload
 systemctl enable mediamtx pi4cam pi4cam-homekit
+systemctl enable --now pi4cam-warm.timer
+systemctl start pi4cam-warm.service || true
 systemctl restart mediamtx pi4cam pi4cam-homekit
 
 # -----------------------------------------------------------------------
@@ -256,7 +323,7 @@ echo ""
 echo "=========================================================="
 echo "  Installation complete!"
 echo ""
-echo "  RTSP stream : rtsp://${LOCAL_IP}:8554/camera"
+echo "  RTSP stream : rtsp://127.0.0.1:8554/camera (local to the Pi only)"
 echo ""
 echo "  ┌──────────────────────────────────┐"
 echo "  │  HomeKit pairing PIN: ${PIN}   │"

@@ -168,3 +168,179 @@ def test_matching_votes_keep_streak_reset():
     cam._ir_mode = True
     cam._apply_ir_vote(True)   # matches night mode
     assert cam._ir_streak == 0
+
+
+# ----------------------------------------------------------------------
+# Night camera tuning (_apply_night_camera, driven by _apply_ir_vote)
+# ----------------------------------------------------------------------
+
+class FakePicam2:
+    """Records set_controls calls so tests can assert the night tuning."""
+
+    def __init__(self):
+        self.controls_log = []
+
+    def set_controls(self, controls):
+        self.controls_log.append(dict(controls))
+
+
+def make_night_manager(**camera):
+    # fps defaults to 30 here, so ir_min_fps=10 (< 30) enables the shutter lever.
+    cam = CameraManager({"camera": {"ir_grayscale": True, **camera}})
+    cam._picam2 = FakePicam2()
+    return cam
+
+
+LONG = CameraManager._AE_EXPOSURE_LONG
+NORMAL = CameraManager._AE_EXPOSURE_NORMAL
+
+
+def test_config_read_and_clamped():
+    d = CameraManager({"camera": {}})
+    assert d._ir_exposure == 0.0
+    assert d._ir_min_fps == 10                       # default
+    c = CameraManager({"camera": {"ir_exposure": 1.5, "ir_min_fps": 8}})
+    assert c._ir_exposure == 1.5 and c._ir_min_fps == 8
+    # EV clamped to libcamera's ±8 range; fps floored to >= 1
+    assert CameraManager({"camera": {"ir_exposure": 99}})._ir_exposure == 8.0
+    assert CameraManager({"camera": {"ir_exposure": -99}})._ir_exposure == -8.0
+    assert CameraManager({"camera": {"ir_min_fps": 0}})._ir_min_fps == 1
+
+
+def test_night_transition_relaxes_shutter_and_reverts():
+    cam = make_night_manager(ir_min_fps=10, ir_exposure=1.5)
+    for _ in range(ENTRY):          # latch into night
+        cam._apply_ir_vote(True)
+    assert cam._ir_mode is True
+    on = cam._picam2.controls_log[-1]
+    assert on["FrameDurationLimits"] == (33333, 100000)   # 30 fps min .. 10 fps max
+    assert on["AeExposureMode"] == LONG
+    assert on["ExposureValue"] == 1.5
+    assert on["NoiseReductionMode"] == CameraManager._NR_HIGH_QUALITY
+    for _ in range(EXIT):           # return to day
+        cam._apply_ir_vote(False)
+    assert cam._ir_mode is False
+    off = cam._picam2.controls_log[-1]
+    assert off["FrameDurationLimits"] == (33333, 33333)   # re-pinned to 30 fps
+    assert off["AeExposureMode"] == NORMAL
+    assert off["ExposureValue"] == 0.0
+    assert off["NoiseReductionMode"] == CameraManager._NR_FAST
+
+
+def test_tuning_fires_once_per_transition_not_per_frame():
+    cam = make_night_manager(ir_min_fps=10)
+    for _ in range(ENTRY + 20):     # keep voting night well past the latch
+        cam._apply_ir_vote(True)
+    assert len(cam._picam2.controls_log) == 1   # one write for the single flip
+
+
+def test_ev_only_when_shutter_lever_disabled():
+    # ir_min_fps >= fps disables the shutter lever; EV bias (and the night
+    # denoise that rides with the default ir_gamma) remain.
+    cam = make_night_manager(ir_min_fps=30, ir_exposure=1.0, ir_gamma=1.0)
+    for _ in range(ENTRY):
+        cam._apply_ir_vote(True)
+    assert cam._picam2.controls_log[-1] == {"ExposureValue": 1.0}
+
+
+def test_shutter_only_when_no_ev():
+    cam = make_night_manager(ir_min_fps=10, ir_exposure=0.0, ir_gamma=1.0)
+    for _ in range(ENTRY):
+        cam._apply_ir_vote(True)
+    on = cam._picam2.controls_log[-1]
+    assert "ExposureValue" not in on
+    assert "NoiseReductionMode" not in on   # denoise is tied to the auto-levels
+    assert on["FrameDurationLimits"] == (33333, 100000)
+    assert on["AeExposureMode"] == LONG
+
+
+def test_night_denoise_rides_with_the_auto_levels():
+    # ir_gamma active → the ISP denoiser goes HighQuality at night, Fast by
+    # day (the stretch multiplies the gain-8x grain — clean it in hardware).
+    cam = make_night_manager(ir_min_fps=30, ir_exposure=0.0)   # gamma default 2.2
+    for _ in range(ENTRY):
+        cam._apply_ir_vote(True)
+    assert cam._picam2.controls_log[-1] == {
+        "NoiseReductionMode": CameraManager._NR_HIGH_QUALITY
+    }
+
+
+def test_fully_disabled_never_touches_controls():
+    # All three night knobs off → nothing at all, existing behaviour preserved.
+    cam = make_night_manager(ir_min_fps=30, ir_exposure=0.0, ir_gamma=1.0)
+    for _ in range(ENTRY):
+        cam._apply_ir_vote(True)
+    assert cam._ir_mode is True
+    assert cam._picam2.controls_log == []
+
+
+def test_apply_night_camera_without_camera_is_noop():
+    # tests/hardware-less construction leaves _picam2 = None → must not raise
+    cam = CameraManager({"camera": {"ir_grayscale": True, "ir_min_fps": 10, "ir_exposure": 2.0}})
+    assert cam._picam2 is None
+    cam._apply_night_camera(True)   # no crash, no effect
+
+
+# ----------------------------------------------------------------------
+# Digital night brightening (ir_gamma LUT)
+# ----------------------------------------------------------------------
+
+def test_night_lut_stretches_the_scene_range_to_full_scale():
+    # The 2026-07-05 field scene: sensor pinned at gain 8x / 41.6 ms, whole
+    # image living at luma ~12-60. Auto-levels must hand that band the full
+    # output range — the static curves (plain gamma = milky, black-anchored
+    # gamma = still dark) both failed exactly here.
+    lut = CameraManager._build_night_lut(12.0, 60.0, 2.2)
+    assert len(lut) == 256
+    assert lut[12] == 0                             # noise pedestal → black
+    assert lut[60] == 255                           # scene top → white
+    assert lut[36] > 150                            # scene midpoint clearly lifted
+    assert all(lut[i] == 0 for i in range(13))      # below pedestal stays black
+    assert all(lut[i] == 255 for i in range(60, 256))  # p99 clips, standard
+    assert all(lut[i + 1] >= lut[i] for i in range(255))  # monotonic
+    assert all(0 <= v <= 255 for v in lut)          # uint8-safe
+
+
+def test_night_lut_min_span_caps_the_digital_gain():
+    # A pitch-black room (signal 10..20) must not be stretched into pure
+    # noise: the span floors at NIGHT_LUT_MIN_SPAN (~5x max gain).
+    lut = CameraManager._build_night_lut(10.0, 20.0, 2.2)
+    span = CameraManager.NIGHT_LUT_MIN_SPAN
+    assert lut[20] < 255                            # NOT stretched to white
+    assert lut[10 + span] == 255                    # full white only at the floor span
+
+
+def test_night_lut_gamma_shapes_the_stretch():
+    soft = CameraManager._build_night_lut(12.0, 60.0, 1.5)
+    hard = CameraManager._build_night_lut(12.0, 60.0, 3.0)
+    assert hard[24] > soft[24]                      # higher gamma = brighter lows
+    assert soft[12] == hard[12] == 0                # same black anchor
+    assert soft[60] == hard[60] == 255              # same white point
+
+
+def test_bitrate_floor_rises_at_night():
+    # The stretched night image macroblocks below ~3 Mbps (field, two
+    # screenshots seconds apart): the governor's 1000 kbps request must be
+    # floored at night, honoured by day.
+    cam = CameraManager({"camera": {"bitrate": 8_000_000}})
+    assert cam._clamp_bitrate(1_000_000) == 1_000_000          # day: honoured
+    assert cam._clamp_bitrate(100_000) == 500_000              # day floor
+    cam._ir_mode = True
+    assert cam._clamp_bitrate(1_000_000) == CameraManager.NIGHT_MIN_BITRATE
+    assert cam._clamp_bitrate(6_000_000) == 6_000_000          # above floor: honoured
+
+
+def test_night_bitrate_floor_never_exceeds_the_ceiling():
+    # A configured ceiling below the night floor wins (the encoder can't be
+    # driven past what the user allowed).
+    cam = CameraManager({"camera": {"bitrate": 2_000_000}})
+    cam._ir_mode = True
+    assert cam._clamp_bitrate(1_000_000) == 2_000_000
+
+
+def test_ir_gamma_default_and_clamping():
+    assert CameraManager({"camera": {}})._ir_gamma == 2.2
+    assert CameraManager({"camera": {"ir_gamma": 99}})._ir_gamma == 5.0
+    assert CameraManager({"camera": {"ir_gamma": 0.2}})._ir_gamma == 1.0
+    # the LUT is built at runtime from scene stats — never at construction
+    assert CameraManager({"camera": {"ir_gamma": 2.2}})._ir_gamma_lut is None
