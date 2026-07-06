@@ -8,6 +8,13 @@ name: ffmpeg-static
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: >-
+          Publish a release under this tag (e.g. ffmpeg-static-7.1.1).
+          Leave empty for an artifact-only build.
+        required: false
+        type: string
   push:
     tags: ["ffmpeg-static-*"]
 
@@ -41,10 +48,13 @@ jobs:
             ffmpeg-static-arm64.sha256
           if-no-files-found: error
 
-      - name: Release (tag builds only)
-        if: startsWith(github.ref, 'refs/tags/ffmpeg-static-')
+      - name: Release (tag builds, or dispatch with release_tag)
+        if: startsWith(github.ref, 'refs/tags/ffmpeg-static-') || inputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
+          # On dispatch the action creates the tag itself (release_tag input);
+          # on a tag push it reuses the pushed tag.
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           files: |
             ffmpeg-static-arm64
             ffmpeg-static-arm64.sha256
