@@ -1,10 +1,15 @@
 name: ffmpeg-static
 
 # Builds the lean static ffmpeg (see scripts/build-static-ffmpeg.sh) on an
-# arm64 runner inside a Debian bookworm container — same glibc as Raspberry
-# Pi OS, so the binary runs on any 64-bit Pi. On a tag push it is attached
-# to a release that install.sh can download (the mediamtx pattern: users
-# never compile). ~2 min in CI vs 30-60 min on a Zero 2 W.
+# arm64 runner inside a Debian BOOKWORM container — deliberately the OLDEST
+# glibc the project supports: glibc is backward-compatible, so a
+# bookworm-built binary (2.36) runs on bookworm AND trixie (2.41) Pi OS,
+# while the reverse would break bookworm installs. install.sh additionally
+# executes the binary once before installing it (soft-fail to the system
+# ffmpeg), so a compatibility miss can never break an install. On a tag
+# push (or dispatch with release_tag) it is attached to a release that
+# install.sh downloads (the mediamtx pattern: users never compile).
+# ~2 min in CI vs 30-60 min on a Zero 2 W.
 
 on:
   workflow_dispatch:

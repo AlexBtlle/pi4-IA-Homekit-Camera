@@ -63,7 +63,7 @@ cd pi4-IA-Homekit-Camera
 sudo bash install.sh
 ```
 
-The installer sets up everything: system packages, Node.js 22, mediamtx, the Python camera pipeline, the HomeKit app, and three systemd services. At the end it prints your **pairing PIN**, and the HomeKit service logs a **QR code**:
+The installer sets up everything: system packages, Node.js 22, mediamtx, the Python camera pipeline, the HomeKit app, and three systemd services. **Nothing is compiled on your Pi** — heavy binaries (mediamtx, the lean ffmpeg that makes live view start in ~0.2 s) are downloaded prebuilt from releases and checksum-verified. At the end it prints your **pairing PIN**, and the HomeKit service logs a **QR code**:
 
 ```bash
 journalctl -u pi4cam-homekit -b --no-pager | head -40
@@ -149,6 +149,9 @@ Everything lives in one file: [`config.yaml`](config.yaml). On an installed syst
 
 | Key | Default | Description |
 |---|---|---|
+| `camera.source` | csi | `csi` (Pi camera module) or `usb` (UVC webcam, *beta* — see [TROUBLESHOOTING](TROUBLESHOOTING.md#usb-webcam-beta)) |
+| `camera.device` | /dev/video0 | V4L2 device (`source: usb` only) |
+| `camera.usb_format` | mjpeg | Webcam output: `mjpeg` / `yuyv` / `h264` (`source: usb` only) |
 | `camera.width` × `height` | 1920×1080 | Capture / stream / recording resolution |
 | `camera.fps` | 30 | Frame rate |
 | `camera.bitrate` | 8000000 | H264 bitrate (bit/s) — ~8 Mbps for crisp 1080p30; lower to ~4 Mbps to save bandwidth |

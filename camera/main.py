@@ -54,7 +54,20 @@ def main() -> None:
     rtsp_cfg = config.get("rtsp", {})
     rtsp_url = f"rtsp://localhost:{rtsp_cfg.get('port', 8554)}/camera"
 
-    camera = CameraManager.get_instance(config)
+    # Camera backend (#19): csi = picamera2 (default, unchanged) | usb = UVC
+    # webcam via ffmpeg [BETA]. Both expose the same surface, so everything
+    # downstream — publisher, detector, control server, the whole HomeKit
+    # side including HKSV — is backend-agnostic.
+    source = str(config.get("camera", {}).get("source", "csi")).lower()
+    if source == "usb":
+        from .usb_camera_manager import UsbCameraManager
+        if config.get("camera", {}).get("ir_grayscale"):
+            logger.warning("ir_grayscale is CSI-only — ignored on the USB backend")
+        camera = UsbCameraManager(config)
+    else:
+        if source != "csi":
+            logger.warning("camera.source '%s' unknown — using csi", source)
+        camera = CameraManager.get_instance(config)
     camera.start()
 
     publisher = RtspPublisher(camera.get_h264_read_fd(), rtsp_url)

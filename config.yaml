@@ -31,6 +31,14 @@
 # ──────────────────────────────────────────────────────────────────────────────
 
 camera:
+  source: csi             # csi = Pi camera module (default) | usb = UVC webcam [BETA #19].
+                          # The USB backend drives everything through one ffmpeg; live,
+                          # snapshots, motion AND HKSV work unchanged. Not supported on
+                          # usb: ir_grayscale, dynamic bitrate, instant-keyframe startup.
+  device: /dev/video0     # [BETA] V4L2 device — only used when source: usb
+  usb_format: mjpeg       # [BETA] what the webcam outputs (v4l2-ctl --list-formats-ext):
+                          #   mjpeg (most webcams) | yuyv (raw — USB 2.0 caps it ~720p)
+                          #   h264 (onboard encoder → zero re-encode, ideal on a Zero 2 W)
   width: 1920
   height: 1080
   fps: 30
