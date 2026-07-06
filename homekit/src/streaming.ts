@@ -68,6 +68,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     private readonly snapshots: SnapshotProvider,
     private readonly bitrate?: BitrateGovernor,
     private readonly forceKeyframe?: () => void,
+    private readonly ffmpegPath: string = "ffmpeg",
   ) {}
 
   // ----------------------------------------------------------------------
@@ -239,7 +240,7 @@ export class StreamingDelegate implements CameraStreamingDelegate {
     ];
 
     const t0 = performance.now();
-    const ff = spawn("ffmpeg", args);
+    const ff = spawn(this.ffmpegPath, args);
     this.ongoingSessions.set(sessionID, ff);
 
     // Instrumentation (#43): splits the START→mediamtx-subscribe gap into

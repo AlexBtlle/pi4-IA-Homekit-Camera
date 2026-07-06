@@ -22,8 +22,8 @@ export class RecordingDelegate implements CameraRecordingDelegate {
   private readonly streams = new Map<number, AbortController>();
   private _active = false;
 
-  constructor(rtspUrl: string) {
-    this.prebuffer = new Prebuffer(rtspUrl);
+  constructor(rtspUrl: string, ffmpegPath?: string) {
+    this.prebuffer = new Prebuffer(rtspUrl, ffmpegPath);
   }
 
   /** Whether HomeKit currently has recording armed (drives the status page). */

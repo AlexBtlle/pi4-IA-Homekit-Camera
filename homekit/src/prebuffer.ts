@@ -102,7 +102,10 @@ export class Prebuffer {
   // Generous enough for a cold spawn (handshake + first keyframe).
   private static readonly STALE_MS = 10_000;
 
-  constructor(private readonly rtspUrl: string) {}
+  constructor(
+    private readonly rtspUrl: string,
+    private readonly ffmpegPath: string = "ffmpeg",
+  ) {}
 
   start(): void {
     if (this.running) {
@@ -191,7 +194,7 @@ export class Prebuffer {
       "pipe:1",
     ];
 
-    const ff = spawn("ffmpeg", args);
+    const ff = spawn(this.ffmpegPath, args);
     this.ff = ff;
     this.lastActivity = performance.now(); // spawn counts as activity
 

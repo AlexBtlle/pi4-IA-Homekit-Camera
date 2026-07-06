@@ -87,13 +87,15 @@ function main(): void {
       (e) => console.error("[stream] keyframe request failed:", e.message),
     );
   };
+  console.log(`[main] ffmpeg for live/HKSV: ${config.ffmpegPath}`);
   const streamingDelegate = new StreamingDelegate(
     config.rtspUrl,
     snapshots,
     bitrateGovernor,
     forceKeyframe,
+    config.ffmpegPath,
   );
-  const recordingDelegate = new RecordingDelegate(config.rtspUrl);
+  const recordingDelegate = new RecordingDelegate(config.rtspUrl, config.ffmpegPath);
 
   // Standard resolutions in descending order. Only those at or below the
   // configured native resolution are advertised — with -c:v copy the stream

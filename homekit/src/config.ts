@@ -18,6 +18,27 @@ export interface AppConfig {
   snapshotPath: string;
   bitrateKbps: number;
   cameraControlUrl: string;
+  ffmpegPath: string;
+}
+
+/** The lean static build (scripts/build-static-ffmpeg.sh) installs here. */
+const STATIC_FFMPEG = "/opt/pi4cam/bin/ffmpeg-static";
+
+/**
+ * Which ffmpeg to spawn for live sessions and the HKSV prebuffer.
+ * Debian's ffmpeg links ~150 shared libraries and costs 5-8 s just to start
+ * on a memory-pressured 512 MB Pi (#43); the optional lean static build
+ * starts in ~0.2 s. Explicit config wins, then the static build if present,
+ * then the system ffmpeg.
+ */
+function resolveFfmpeg(configured: unknown): string {
+  if (configured) {
+    return String(configured);
+  }
+  if (fs.existsSync(STATIC_FFMPEG)) {
+    return STATIC_FFMPEG;
+  }
+  return "ffmpeg";
 }
 
 /**
@@ -86,6 +107,7 @@ export function loadConfig(): AppConfig {
     // config.yaml stores bitrate in bit/s; the bitrate governor thinks in kbps.
     bitrateKbps: Math.round(Number(camera.bitrate ?? 4_000_000) / 1000),
     cameraControlUrl: `http://127.0.0.1:${Number(camera.control_port ?? 8990)}`,
+    ffmpegPath: resolveFfmpeg(homekit.ffmpeg_path),
   };
 }
 

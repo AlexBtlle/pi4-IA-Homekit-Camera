@@ -134,14 +134,19 @@ the wait for the next keyframe plus `ffmpeg` startup.
 - **GOP / keyframe.** The encoder emits a keyframe every 1 s (`iperiod = fps` in
   `camera_manager.py`). Shorter GOP = faster first frame; don't raise it without
   reason (it lengthens the time-to-first-frame).
-- **Cold vs warm start.** Spawning the live-view `ffmpeg` costs ~1.7 s of pure
-  CPU (dynamic linking at 1 GHz) plus, when the page cache went cold, ~3.4 s of
-  SD reloads (measured on a Zero 2 W: `time ffmpeg -version` 5.1 s cold, 1.7 s
-  hot). The install ships **`pi4cam-warm.timer`** — a soft `vmtouch` every
-  10 min that keeps ffmpeg's libraries cached (pages stay evictable) — so cold
-  starts behave like warm ones. On session start the app also **forces
-  encoder keyframes** (salvo over the first 3 s) so the viewer never waits out
-  the GOP once ffmpeg is connected.
+- **The ffmpeg startup tax.** Debian's ffmpeg links ~150 shared libraries;
+  spawning it costs ~1.7 s of linking CPU on a quiet Zero 2 W — and **5-8 s**
+  when memory is tight (HKSV armed), where the process stalls in reclaim
+  while mapping ~50 MB of private pages (field-measured: 7.6 s real for
+  1.5 s CPU with the page cache 100 % warm). Mitigations shipped: the
+  **`pi4cam-warm.timer`** keeps ffmpeg's full dependency tree soft-cached,
+  and the app **forces encoder keyframes** (salvo over the first 20 s) so
+  the viewer never waits out the GOP once ffmpeg connects. The real cure is
+  the **lean static ffmpeg**: run `bash scripts/build-static-ffmpeg.sh` once
+  on the Pi (~45 min) — it installs `/opt/pi4cam/bin/ffmpeg-static`
+  (RTSP/RTP/SRTP/H264-copy/AAC only, zero external libraries, ~0.2 s
+  startup), which the app auto-detects on restart (it logs its choice:
+  `[main] ffmpeg for live/HKSV: …`). To revert, delete that file.
 
 Diagnose the cold-start theory (optional):
 
