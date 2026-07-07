@@ -375,16 +375,6 @@ def test_day_gamma_default_and_clamping():
     assert CameraManager({"camera": {"day_gamma": 0.2}})._day_gamma == 1.0
 
 
-def test_day_gamma_lut_is_a_pure_shadow_lift():
-    # low=0/high=255 → out = 255·(i/255)^(1/γ): endpoints fixed, monotonic, and
-    # midtones lifted (never darkened) — the shadow lift, no percentile crush.
-    lut = CameraManager._build_night_lut(0.0, 255.0, 2.2)
-    assert lut[0] == 0 and lut[255] == 255           # endpoints preserved
-    assert all(lut[i + 1] >= lut[i] for i in range(255))  # monotonic
-    assert lut[64] > 64 and lut[128] > 128           # shadows/mids brightened
-    assert CameraManager._build_night_lut(0.0, 255.0, 1.0) == list(range(256))  # γ=1 identity
-
-
 def _day_lift_manager(day_gamma=2.2):
     cam = CameraManager({"camera": {"day_gamma": day_gamma}})
     cam._ctrl_seen = []

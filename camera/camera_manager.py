@@ -129,17 +129,20 @@ class CameraManager:
         self._contrast = float(self._cfg.get("contrast", 1.0))
         self._saturation = float(self._cfg.get("saturation", 1.0))
 
-        # Daytime/colour brightening for dim scenes (#52) — AUTO: a gamma curve
-        # on the main frame's luma (lifts shadows, preserves highlights), kept
-        # in colour, engaged only when the AEC's Lux says the scene is dark
-        # (see _update_day_lift). ExposureValue was tried first and proved inert
-        # at this light (the AEC ignores the bias — dg stays 1.0), so this lifts
-        # the pixels directly through cv2.LUT, exactly like night mode but in
-        # colour. 1.0 = feature off (identity curve). Clamped to [1, 4].
+        # Daytime/colour brightening for dim scenes (#52) — AUTO: the night
+        # auto-levels applied in colour. The scene's luma is stretched from its
+        # own percentiles (p5→p99, black point anchored so it doesn't go milky)
+        # and shaped by this gamma, via cv2.LUT on the main frame — engaged only
+        # when the AEC's Lux says the scene is dark (see _update_day_lift).
+        # ExposureValue was tried first and proved inert at this light (the AEC
+        # ignores the bias — dg stays 1.0), hence the direct pixel lift. 1.0 =
+        # feature off (identity). Clamped to [1, 4].
         self._day_gamma = max(1.0, min(4.0, float(self._cfg.get("day_gamma", 1.0))))
         self._day_lift_active = False   # hysteresis latch (dim-scene lift engaged)
         self._day_lift_streak = 0       # consecutive frames voting the other way
-        self._day_lut: np.ndarray | None = None  # static gamma LUT, built in start()
+        self._day_lut: np.ndarray | None = None  # auto-levels LUT, rebuilt per frame
+        self._day_low: float | None = None       # EMA'd black point (lores p5)
+        self._day_high: float | None = None       # EMA'd white point (lores p99)
 
         # Night vision (beta): under 850 nm IR light the image is monochrome with
         # a pink cast. Detection reads the *untouched* lores chroma planes every
@@ -271,12 +274,6 @@ class CameraManager:
         self._picam2.pre_callback = self._lores_callback
 
         if self._day_gamma > 1.0:
-            # Static pure-gamma curve: _build_night_lut with low=0/high=255 is
-            # out = 255·(i/255)^(1/γ) — no percentile stretch (that would crush
-            # the shadows against bright windows), just a shadow lift.
-            self._day_lut = np.array(
-                self._build_night_lut(0.0, 255.0, self._day_gamma), dtype=np.uint8
-            )
             logger.info(
                 "Day-lift armed (day_gamma=%.1f, engage ≤%.0f lux / release ≥%.0f lux)",
                 self._day_gamma, self.DAY_LIFT_LUX_ENTER, self.DAY_LIFT_LUX_EXIT,
@@ -613,6 +610,11 @@ class CameraManager:
                 self._update_night_mode(arr, request)
             if self._day_gamma > 1.0:
                 self._update_day_lift(request)
+                if self._day_lift_active:
+                    self._refresh_day_lut(arr)     # track the black point every frame
+                elif self._day_lut is not None:
+                    self._day_lut = None           # dropped: stop applying by day
+                    self._day_low = self._day_high = None
             y_plane = arr[:self._lores_h, :self._lores_w].copy()
             with self._lores_condition:
                 self._latest_lores_frame = y_plane
@@ -686,6 +688,29 @@ class CameraManager:
             self._night_high += a * (high - self._night_high)
         self._ir_gamma_lut = np.array(
             self._build_night_lut(self._night_low, self._night_high, self._ir_gamma),
+            dtype=np.uint8,
+        )
+
+    def _refresh_day_lut(self, lores_arr) -> None:
+        """Rebuild the day-lift LUT from this frame's lores-luma percentiles.
+
+        The same auto-levels as night — anchoring the black point on the scene's
+        p5 is what stops the lift going milky (a pure gamma from 0 lifts the
+        noise pedestal to grey) — but shaped by day_gamma and applied to luma
+        only, so the frame stays in colour. EMA-smoothed against flicker; the
+        lores is never touched, so the statistics see the raw sensor.
+        """
+        y = lores_arr[:self._lores_h, :self._lores_w]
+        low = float(np.percentile(y, self.NIGHT_LUT_LOW_PCT))
+        high = float(np.percentile(y, self.NIGHT_LUT_HIGH_PCT))
+        if self._day_low is None or self._day_high is None:
+            self._day_low, self._day_high = low, high
+        else:
+            a = self.NIGHT_STATS_EMA
+            self._day_low += a * (low - self._day_low)
+            self._day_high += a * (high - self._day_high)
+        self._day_lut = np.array(
+            self._build_night_lut(self._day_low, self._day_high, self._day_gamma),
             dtype=np.uint8,
         )
 
