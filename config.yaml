@@ -77,8 +77,8 @@ camera:
                           # and the image is untouched — no risk of over-exposing a sunny room.
                           # At that light the sensor is already pinned, so this is a digital lift
                           # (brighter but noisier — ISP denoise cleans it). Night/IR uses its own
-                          # path (ir_grayscale). Higher = brighter shadows; 2.2 is a good start,
-                          # 1.0 = feature off.
+                          # path (ir_grayscale). Higher = brighter shadows; 2.5 is field-tested
+                          # for a dim room at dusk, 1.0 = feature off.
   ir_grayscale: false     # [BETA] auto-switch stream + snapshot to grayscale under IR night vision
                           # (kills the 850 nm pink cast). Detection reads the lores chroma planes
                           # (uniform chroma = IR) with hysteresis; the effect neutralises the main
