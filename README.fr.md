@@ -163,6 +163,7 @@ Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Sur un système 
 | `camera.sharpness` | 1.0 | Accentuation ISP (0.0–16.0). Essayer 1.5–2.0 pour compenser la mollesse de l'objectif. |
 | `camera.contrast` | 1.0 | Contraste ISP (0.0–32.0). |
 | `camera.saturation` | 1.0 | Saturation couleur ISP (0.0–32.0). Essayer 1.2–1.5 pour des couleurs plus riches. |
+| `camera.day_ev` | 0.0 | **(bêta)** Biais d'exposition de jour/couleur en EV/stops (+1 = ×2 la cible AE), pour éclaircir les scènes couleur sombres. En basse lumière le capteur est déjà saturé (gain 8×) : un biais positif éclaircit via le gain numérique de l'ISP — plus clair mais plus bruité. La nuit/IR a son propre chemin (`ir_grayscale`). Plage utile 0.0–1.5 ; 0.0 = off. |
 | `camera.ir_grayscale` | false | **(bêta)** Bascule le flux **et** la miniature en niveaux de gris en vision nocturne IR, supprimant la dominante rose du 850 nm. L'IR est détecté sur les statistiques chroma du flux de détection (avec hystérésis), et l'effet neutralise les plans couleur du frame avant encodage — les transitions jour/nuit sont mesurées sur de vraies données couleur. |
 | `camera.snapshot_path` | /dev/shm/pi4cam-snapshot.jpg | Emplacement d'écriture de la miniature JPEG — un chemin tmpfs (RAM), pour éviter l'usure de la carte SD due aux réécritures 24/7. |
 | `homekit.camera_name` | Pi Camera | Nom affiché dans l'app Maison |

@@ -119,6 +119,16 @@ class CameraManager:
         self._contrast = float(self._cfg.get("contrast", 1.0))
         self._saturation = float(self._cfg.get("saturation", 1.0))
 
+        # Daytime/colour exposure bias (ExposureValue, in EV/stops), applied
+        # whenever night mode is NOT latched — the day counterpart of
+        # ir_exposure, under evaluation for dim colour scenes (#52). At lux~20
+        # the sensor is pinned (gain 8x, shutter at the ~1/fps cap), so a
+        # positive bias raises the AE target through ISP digital gain (a real,
+        # measurable lift — with its noise cost). 0.0 = off (libcamera's
+        # default), so a plain install is byte-for-byte unchanged. Clamped to
+        # libcamera's ±8 range.
+        self._day_ev = max(-8.0, min(8.0, float(self._cfg.get("day_ev", 0.0))))
+
         # Night vision (beta): under 850 nm IR light the image is monochrome with
         # a pink cast. Detection reads the *untouched* lores chroma planes every
         # analysed frame; the effect neutralises the main frame's U/V planes in
@@ -208,6 +218,10 @@ class CameraManager:
                 "Sharpness": self._sharpness,
                 "Contrast": self._contrast,
                 "Saturation": self._saturation,
+                # Day baseline exposure bias (#52). 0.0 is libcamera's own
+                # default, so day_ev unset = no change. Night mode overrides
+                # this to ir_exposure and restores it on the flip back.
+                "ExposureValue": self._day_ev,
             },
         )
 
@@ -379,8 +393,10 @@ class CameraManager:
           that makes ExposureValue saturate. This is what actually adds photons,
           and it adds no gain-noise. Paired with AeExposureMode=Long so the AEC
           spends that budget on shutter time before analogue gain.
-        - ExposureValue: bias the AE target up (only useful once the relaxed
-          shutter ceiling gives the AEC room to reach it).
+        - ExposureValue: bias the AE target up at night (only useful once the
+          relaxed shutter ceiling gives the AEC room to reach it). On the flip
+          back to day the value returns to day_ev, not a hard 0.0, so a
+          configured daytime bias (#52) survives night transitions.
 
         Each knob is skipped when its config leaves it at the daylight default,
         so a plain install is untouched. None-guarded and wrapped so a rejected
@@ -399,8 +415,8 @@ class CameraManager:
             night_us = round(1e6 / self._ir_min_fps)
             controls["FrameDurationLimits"] = (day_us, night_us) if on else (day_us, day_us)
             controls["AeExposureMode"] = self._AE_EXPOSURE_LONG if on else self._AE_EXPOSURE_NORMAL
-        if self._ir_exposure != 0.0:
-            controls["ExposureValue"] = self._ir_exposure if on else 0.0
+        if self._ir_exposure != self._day_ev:
+            controls["ExposureValue"] = self._ir_exposure if on else self._day_ev
         if self._ir_gamma > 1.0:
             # The auto-levels stretch needs the cleanest source it can get:
             # ISP hardware denoise at HighQuality while night mode is active.

@@ -70,6 +70,11 @@ camera:
   sharpness: 1.0          # ISP sharpness 0.0–16.0 (1.0 = default; try 1.5–2.0 for crisper edges)
   contrast: 1.0           # ISP contrast  0.0–32.0 (1.0 = default)
   saturation: 1.0         # ISP saturation 0.0–32.0 (1.0 = default; try 1.2–1.5 for richer colours)
+  day_ev: 0.0             # [BETA #52] daytime/colour exposure bias in EV/stops (+1 = 2× the AE
+                          # target). Brightens dim COLOUR scenes (the IR/night path is separate —
+                          # see ir_exposure). In low light the sensor is already pinned (gain 8x),
+                          # so a positive bias lifts via ISP digital gain: brighter but noisier —
+                          # judge it on your own scene. Useful range 0.0–1.5. 0.0 = off (no change).
   ir_grayscale: false     # [BETA] auto-switch stream + snapshot to grayscale under IR night vision
                           # (kills the 850 nm pink cast). Detection reads the lores chroma planes
                           # (uniform chroma = IR) with hysteresis; the effect neutralises the main

@@ -3,6 +3,8 @@
 Covers the pure frame classifier (_is_ir_frame) and the hysteresis state
 machine (_apply_ir_vote) that the v1 probe design never had tests for.
 """
+import types
+
 from camera.camera_manager import CameraManager
 
 ENTRY = CameraManager.IR_ENTRY_FRAMES
@@ -363,5 +365,26 @@ def test_ir_gamma_default_and_clamping():
     assert CameraManager({"camera": {}})._ir_gamma == 2.2
     assert CameraManager({"camera": {"ir_gamma": 99}})._ir_gamma == 5.0
     assert CameraManager({"camera": {"ir_gamma": 0.2}})._ir_gamma == 1.0
+
+
+def test_day_ev_default_and_clamping():
+    # Off by default (#52), clamped to libcamera's ±8 ExposureValue range.
+    assert CameraManager({"camera": {}})._day_ev == 0.0
+    assert CameraManager({"camera": {"day_ev": 1.5}})._day_ev == 1.5
+    assert CameraManager({"camera": {"day_ev": 99}})._day_ev == 8.0
+    assert CameraManager({"camera": {"day_ev": -99}})._day_ev == -8.0
+
+
+def test_day_ev_is_the_daylight_baseline_night_overrides_it():
+    # The night ExposureValue toggle must restore day_ev (not a hard 0.0) on
+    # the flip back to day, so a configured daytime bias survives night (#52).
+    cam = CameraManager({"camera": {"day_ev": 1.0, "ir_exposure": 2.0, "ir_min_fps": 30}})
+    controls_seen = []
+    cam._picam2 = types.SimpleNamespace(set_controls=lambda c: controls_seen.append(c))
+    cam._current_bitrate = cam._night_min_bitrate  # skip the re-clamp branch
+    cam._apply_night_camera(True)
+    assert controls_seen[-1]["ExposureValue"] == 2.0   # night → ir_exposure
+    cam._apply_night_camera(False)
+    assert controls_seen[-1]["ExposureValue"] == 1.0   # day → day_ev, not 0.0
     # the LUT is built at runtime from scene stats — never at construction
     assert CameraManager({"camera": {"ir_gamma": 2.2}})._ir_gamma_lut is None
