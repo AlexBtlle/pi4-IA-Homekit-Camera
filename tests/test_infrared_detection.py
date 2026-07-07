@@ -376,73 +376,73 @@ def test_day_ev_default_and_clamping():
     assert CameraManager({"camera": {"day_ev": -99}})._day_ev == 0.0
 
 
-def _day_ev_manager(day_ev=1.0, gain_max=8.0):
+def _day_ev_manager(day_ev=1.0):
     cam = CameraManager({"camera": {"day_ev": day_ev}})
-    cam._gain_max = gain_max
     cam._ev_seen = []
     cam._picam2 = types.SimpleNamespace(set_controls=lambda c: cam._ev_seen.append(c))
     return cam
 
 
-def _feed_gain(cam, gain, frames):
-    req = types.SimpleNamespace(get_metadata=lambda: {"AnalogueGain": gain})
+def _feed_lux(cam, lux, frames):
+    md = {} if lux is None else {"Lux": lux}
+    req = types.SimpleNamespace(get_metadata=lambda: md)
     for _ in range(frames):
         cam._update_day_ev(req)
 
 
 def test_day_ev_engages_only_after_the_streak_when_scene_is_dim():
-    # Gain pinned near the sensor max (dim) → the lift engages, but only after
-    # DAY_EV_STREAK consecutive confirming frames (debounce), applying day_ev.
-    cam = _day_ev_manager(day_ev=1.0, gain_max=8.0)
-    _feed_gain(cam, 8.0, CameraManager.DAY_EV_STREAK - 1)
+    # Low lux (dim) → the lift engages, but only after DAY_EV_STREAK consecutive
+    # confirming frames (debounce), applying day_ev.
+    cam = _day_ev_manager(day_ev=1.0)
+    _feed_lux(cam, 20.0, CameraManager.DAY_EV_STREAK - 1)
     assert cam._day_ev_active is False           # not yet — streak not reached
     assert cam._ev_seen == []
-    _feed_gain(cam, 8.0, 1)                       # the flipping frame
+    _feed_lux(cam, 20.0, 1)                       # the flipping frame
     assert cam._day_ev_active is True
     assert cam._ev_seen[-1] == {"ExposureValue": 1.0}
 
 
 def test_day_ev_releases_when_the_scene_brightens():
-    cam = _day_ev_manager(day_ev=1.0, gain_max=8.0)
+    cam = _day_ev_manager(day_ev=1.0)
     cam._day_ev_active = True                     # start engaged
-    _feed_gain(cam, 2.0, CameraManager.DAY_EV_STREAK)   # gain collapses (bright)
+    _feed_lux(cam, 150.0, CameraManager.DAY_EV_STREAK)   # lux jumps (bright)
     assert cam._day_ev_active is False
     assert cam._ev_seen[-1] == {"ExposureValue": 0.0}
 
 
 def test_day_ev_hysteresis_band_does_not_flap():
-    # Mid-band gain (between exit 60% and enter 90% of max) must hold the
-    # current state in BOTH directions — no oscillation at the threshold.
-    mid = 6.0  # 0.60*8=4.8 < 6.0 < 0.90*8=7.2
-    off = _day_ev_manager(gain_max=8.0)
-    _feed_gain(off, mid, CameraManager.DAY_EV_STREAK * 2)
+    # Mid-band lux (between enter 45 and exit 90) must hold the current state in
+    # BOTH directions — no oscillation at the threshold.
+    mid = 60.0  # 45 < 60 < 90
+    off = _day_ev_manager()
+    _feed_lux(off, mid, CameraManager.DAY_EV_STREAK * 2)
     assert off._day_ev_active is False            # stays off
-    on = _day_ev_manager(gain_max=8.0)
+    on = _day_ev_manager()
     on._day_ev_active = True
-    _feed_gain(on, mid, CameraManager.DAY_EV_STREAK * 2)
+    _feed_lux(on, mid, CameraManager.DAY_EV_STREAK * 2)
     assert on._day_ev_active is True              # stays on
 
 
 def test_day_ev_streak_resets_on_a_contrary_frame():
     # A lone bright frame amid dim ones must not accumulate toward a flip.
-    cam = _day_ev_manager(gain_max=8.0)
-    _feed_gain(cam, 8.0, CameraManager.DAY_EV_STREAK - 1)
-    _feed_gain(cam, 3.0, 1)                       # resets the streak
-    _feed_gain(cam, 8.0, CameraManager.DAY_EV_STREAK - 1)
+    cam = _day_ev_manager()
+    _feed_lux(cam, 20.0, CameraManager.DAY_EV_STREAK - 1)
+    _feed_lux(cam, 200.0, 1)                      # resets the streak
+    _feed_lux(cam, 20.0, CameraManager.DAY_EV_STREAK - 1)
     assert cam._day_ev_active is False            # never reached the streak
 
 
 def test_day_ev_never_engages_in_night_mode():
-    cam = _day_ev_manager(gain_max=8.0)
+    cam = _day_ev_manager()
     cam._ir_mode = True                           # night owns ExposureValue
-    _feed_gain(cam, 8.0, CameraManager.DAY_EV_STREAK * 2)
+    _feed_lux(cam, 20.0, CameraManager.DAY_EV_STREAK * 2)
     assert cam._day_ev_active is False
     assert cam._ev_seen == []
 
 
-def test_day_ev_disabled_when_gain_max_unknown():
-    cam = _day_ev_manager(gain_max=None)          # camera_controls lookup failed
-    _feed_gain(cam, 8.0, CameraManager.DAY_EV_STREAK * 2)
+def test_day_ev_inert_when_tuning_reports_no_lux():
+    cam = _day_ev_manager()                        # metadata has no "Lux" key
+    _feed_lux(cam, None, CameraManager.DAY_EV_STREAK * 2)
     assert cam._day_ev_active is False
     assert cam._ev_seen == []
 
