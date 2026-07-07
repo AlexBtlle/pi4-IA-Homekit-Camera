@@ -368,23 +368,109 @@ def test_ir_gamma_default_and_clamping():
 
 
 def test_day_ev_default_and_clamping():
-    # Off by default (#52), clamped to libcamera's ±8 ExposureValue range.
+    # Off by default (#52), clamped to [0, 8] — brightening only (a negative
+    # bias would break the gain-pinned trigger's feedback stability).
     assert CameraManager({"camera": {}})._day_ev == 0.0
     assert CameraManager({"camera": {"day_ev": 1.5}})._day_ev == 1.5
     assert CameraManager({"camera": {"day_ev": 99}})._day_ev == 8.0
-    assert CameraManager({"camera": {"day_ev": -99}})._day_ev == -8.0
+    assert CameraManager({"camera": {"day_ev": -99}})._day_ev == 0.0
 
 
-def test_day_ev_is_the_daylight_baseline_night_overrides_it():
-    # The night ExposureValue toggle must restore day_ev (not a hard 0.0) on
-    # the flip back to day, so a configured daytime bias survives night (#52).
+def _day_ev_manager(day_ev=1.0, gain_max=8.0):
+    cam = CameraManager({"camera": {"day_ev": day_ev}})
+    cam._gain_max = gain_max
+    cam._ev_seen = []
+    cam._picam2 = types.SimpleNamespace(set_controls=lambda c: cam._ev_seen.append(c))
+    return cam
+
+
+def _feed_gain(cam, gain, frames):
+    req = types.SimpleNamespace(get_metadata=lambda: {"AnalogueGain": gain})
+    for _ in range(frames):
+        cam._update_day_ev(req)
+
+
+def test_day_ev_engages_only_after_the_streak_when_scene_is_dim():
+    # Gain pinned near the sensor max (dim) → the lift engages, but only after
+    # DAY_EV_STREAK consecutive confirming frames (debounce), applying day_ev.
+    cam = _day_ev_manager(day_ev=1.0, gain_max=8.0)
+    _feed_gain(cam, 8.0, CameraManager.DAY_EV_STREAK - 1)
+    assert cam._day_ev_active is False           # not yet — streak not reached
+    assert cam._ev_seen == []
+    _feed_gain(cam, 8.0, 1)                       # the flipping frame
+    assert cam._day_ev_active is True
+    assert cam._ev_seen[-1] == {"ExposureValue": 1.0}
+
+
+def test_day_ev_releases_when_the_scene_brightens():
+    cam = _day_ev_manager(day_ev=1.0, gain_max=8.0)
+    cam._day_ev_active = True                     # start engaged
+    _feed_gain(cam, 2.0, CameraManager.DAY_EV_STREAK)   # gain collapses (bright)
+    assert cam._day_ev_active is False
+    assert cam._ev_seen[-1] == {"ExposureValue": 0.0}
+
+
+def test_day_ev_hysteresis_band_does_not_flap():
+    # Mid-band gain (between exit 60% and enter 90% of max) must hold the
+    # current state in BOTH directions — no oscillation at the threshold.
+    mid = 6.0  # 0.60*8=4.8 < 6.0 < 0.90*8=7.2
+    off = _day_ev_manager(gain_max=8.0)
+    _feed_gain(off, mid, CameraManager.DAY_EV_STREAK * 2)
+    assert off._day_ev_active is False            # stays off
+    on = _day_ev_manager(gain_max=8.0)
+    on._day_ev_active = True
+    _feed_gain(on, mid, CameraManager.DAY_EV_STREAK * 2)
+    assert on._day_ev_active is True              # stays on
+
+
+def test_day_ev_streak_resets_on_a_contrary_frame():
+    # A lone bright frame amid dim ones must not accumulate toward a flip.
+    cam = _day_ev_manager(gain_max=8.0)
+    _feed_gain(cam, 8.0, CameraManager.DAY_EV_STREAK - 1)
+    _feed_gain(cam, 3.0, 1)                       # resets the streak
+    _feed_gain(cam, 8.0, CameraManager.DAY_EV_STREAK - 1)
+    assert cam._day_ev_active is False            # never reached the streak
+
+
+def test_day_ev_never_engages_in_night_mode():
+    cam = _day_ev_manager(gain_max=8.0)
+    cam._ir_mode = True                           # night owns ExposureValue
+    _feed_gain(cam, 8.0, CameraManager.DAY_EV_STREAK * 2)
+    assert cam._day_ev_active is False
+    assert cam._ev_seen == []
+
+
+def test_day_ev_disabled_when_gain_max_unknown():
+    cam = _day_ev_manager(gain_max=None)          # camera_controls lookup failed
+    _feed_gain(cam, 8.0, CameraManager.DAY_EV_STREAK * 2)
+    assert cam._day_ev_active is False
+    assert cam._ev_seen == []
+
+
+def test_night_clears_an_engaged_day_lift_and_resets_on_return():
+    # A dim-day lift must never leak into night, and the detector resets to
+    # "no lift" on the flip back to day so it re-evaluates from scratch (#52).
     cam = CameraManager({"camera": {"day_ev": 1.0, "ir_exposure": 2.0, "ir_min_fps": 30}})
-    controls_seen = []
-    cam._picam2 = types.SimpleNamespace(set_controls=lambda c: controls_seen.append(c))
+    seen = []
+    cam._picam2 = types.SimpleNamespace(set_controls=lambda c: seen.append(c))
     cam._current_bitrate = cam._night_min_bitrate  # skip the re-clamp branch
+    cam._day_ev_active = True                       # lift engaged by day
     cam._apply_night_camera(True)
-    assert controls_seen[-1]["ExposureValue"] == 2.0   # night → ir_exposure
+    assert seen[-1]["ExposureValue"] == 2.0         # night → ir_exposure, lift cleared
     cam._apply_night_camera(False)
-    assert controls_seen[-1]["ExposureValue"] == 1.0   # day → day_ev, not 0.0
+    assert seen[-1]["ExposureValue"] == 0.0         # day → reset to no-lift
+    assert cam._day_ev_active is False and cam._day_ev_streak == 0
+
+
+def test_night_exposure_path_unchanged_when_day_ev_off():
+    # Feature off (day_ev=0) → the original ir_exposure-only night path.
+    cam = CameraManager({"camera": {"ir_exposure": 2.0, "ir_min_fps": 30}})
+    seen = []
+    cam._picam2 = types.SimpleNamespace(set_controls=lambda c: seen.append(c))
+    cam._current_bitrate = cam._night_min_bitrate
+    cam._apply_night_camera(True)
+    assert seen[-1]["ExposureValue"] == 2.0
+    cam._apply_night_camera(False)
+    assert seen[-1]["ExposureValue"] == 0.0
     # the LUT is built at runtime from scene stats — never at construction
     assert CameraManager({"camera": {"ir_gamma": 2.2}})._ir_gamma_lut is None

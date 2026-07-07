@@ -52,6 +52,15 @@ class CameraManager:
     # Exit is slower than entry so car headlights at night can't flip us back.
     IR_ENTRY_FRAMES = 15      # ≈3 s at 5 fps before switching to grayscale
     IR_EXIT_FRAMES = 50       # ≈10 s at 5 fps before returning to colour
+    # Day-EV auto-lift trigger (#52), on the AEC's analogue gain as a fraction
+    # of the sensor's max. Gain-based, not luma-based, on purpose: the lift adds
+    # DIGITAL gain, so analogue gain stays pinned when engaged — the trigger
+    # signal doesn't move under its own effect (no feedback oscillation). Value
+    # hysteresis: engage when the AEC is this pinned, release once it recovers
+    # this much headroom. DAY_EV_STREAK debounces transient light changes.
+    DAY_EV_ENTER_FRAC = 0.90  # engage the lift at ≥90 % of max analogue gain
+    DAY_EV_EXIT_FRAC = 0.60   # release once gain falls under 60 % of max
+    DAY_EV_STREAK = 8         # consecutive confirming frames (~1.5 s at 5 fps)
     # AeExposureMode enum (libcamera): biases the AE shutter/gain split. Night
     # mode uses Long so the budget freed by a relaxed FrameDurationLimits is
     # spent on shutter time (real light) before analogue gain (noise).
@@ -119,15 +128,21 @@ class CameraManager:
         self._contrast = float(self._cfg.get("contrast", 1.0))
         self._saturation = float(self._cfg.get("saturation", 1.0))
 
-        # Daytime/colour exposure bias (ExposureValue, in EV/stops), applied
-        # whenever night mode is NOT latched — the day counterpart of
-        # ir_exposure, under evaluation for dim colour scenes (#52). At lux~20
-        # the sensor is pinned (gain 8x, shutter at the ~1/fps cap), so a
-        # positive bias raises the AE target through ISP digital gain (a real,
-        # measurable lift — with its noise cost). 0.0 = off (libcamera's
-        # default), so a plain install is byte-for-byte unchanged. Clamped to
-        # libcamera's ±8 range.
-        self._day_ev = max(-8.0, min(8.0, float(self._cfg.get("day_ev", 0.0))))
+        # Daytime/colour exposure bias (ExposureValue, in EV/stops) for dim
+        # colour scenes (#52) — AUTO: engaged only while the scene is dark and
+        # never in bright light (see _update_day_ev). At lux~20 the sensor is
+        # pinned (gain 8x, shutter at the ~1/fps cap), so the bias lifts through
+        # ISP digital gain (a real, measurable lift — with its noise cost). In
+        # daylight the AEC has gain headroom, the trigger stays off, and the
+        # scene is untouched. 0.0 = feature off (libcamera default) → a plain
+        # install is byte-for-byte unchanged. Clamped to [0, 8]: only a positive
+        # bias makes sense here, and a negative one would lower the AE target,
+        # drop analogue gain and break the gain-pinned trigger's feedback
+        # stability (oscillation). Brightening only.
+        self._day_ev = max(0.0, min(8.0, float(self._cfg.get("day_ev", 0.0))))
+        self._day_ev_active = False   # hysteresis latch (dim-scene lift engaged)
+        self._day_ev_streak = 0       # consecutive frames voting the other way
+        self._gain_max: float | None = None  # sensor's max analogue gain, read in start()
 
         # Night vision (beta): under 850 nm IR light the image is monochrome with
         # a pink cast. Detection reads the *untouched* lores chroma planes every
@@ -218,10 +233,9 @@ class CameraManager:
                 "Sharpness": self._sharpness,
                 "Contrast": self._contrast,
                 "Saturation": self._saturation,
-                # Day baseline exposure bias (#52). 0.0 is libcamera's own
-                # default, so day_ev unset = no change. Night mode overrides
-                # this to ir_exposure and restores it on the flip back.
-                "ExposureValue": self._day_ev,
+                # ExposureValue starts at libcamera's 0.0 default: the day-EV
+                # auto-lift (#52) engages it only once the scene proves dim,
+                # and night mode drives it via ir_exposure.
             },
         )
 
@@ -258,6 +272,18 @@ class CameraManager:
 
         self._picam2.configure(video_cfg)
         self._picam2.pre_callback = self._lores_callback
+
+        # Max analogue gain of the selected sensor mode — the day-EV auto-lift
+        # (#52) scales its trigger to it, so the threshold is right whether the
+        # sensor caps at 8x (OV5647) or higher (IMX219/708). Off if unknown.
+        if self._day_ev != 0.0:
+            try:
+                self._gain_max = float(self._picam2.camera_controls["AnalogueGain"][1])
+                logger.info("Day-EV auto-lift armed (day_ev=%.2f, gain_max=%.1fx)",
+                            self._day_ev, self._gain_max)
+            except (KeyError, TypeError, ValueError):
+                self._gain_max = None
+                logger.warning("AnalogueGain limits unknown — day_ev auto-lift disabled")
 
         self._pipe_r, self._pipe_w = os.pipe()
         # Enlarge the pipe from the 64 KB default (~65 ms of video at 8 Mbps)
@@ -394,9 +420,10 @@ class CameraManager:
           and it adds no gain-noise. Paired with AeExposureMode=Long so the AEC
           spends that budget on shutter time before analogue gain.
         - ExposureValue: bias the AE target up at night (only useful once the
-          relaxed shutter ceiling gives the AEC room to reach it). On the flip
-          back to day the value returns to day_ev, not a hard 0.0, so a
-          configured daytime bias (#52) survives night transitions.
+          relaxed shutter ceiling gives the AEC room to reach it). The day-EV
+          auto-lift (#52) owns this control by day; night takes it over and the
+          detector is reset on the flip back, so a dim-day lift can never leak
+          into night and re-evaluates from scratch once colour returns.
 
         Each knob is skipped when its config leaves it at the daylight default,
         so a plain install is untouched. None-guarded and wrapped so a rejected
@@ -415,8 +442,17 @@ class CameraManager:
             night_us = round(1e6 / self._ir_min_fps)
             controls["FrameDurationLimits"] = (day_us, night_us) if on else (day_us, day_us)
             controls["AeExposureMode"] = self._AE_EXPOSURE_LONG if on else self._AE_EXPOSURE_NORMAL
-        if self._ir_exposure != self._day_ev:
-            controls["ExposureValue"] = self._ir_exposure if on else self._day_ev
+        # Night biases ExposureValue to ir_exposure; day hands it to the #52
+        # auto-lift. With the lift enabled we always poke here (so an engaged
+        # dim-day lift can't leak into night) and reset the detector on the
+        # flip back to day. Feature off → the original ir_exposure-only path.
+        if self._day_ev != 0.0:
+            if not on:
+                self._day_ev_active = False
+                self._day_ev_streak = 0
+            controls["ExposureValue"] = self._ir_exposure if on else 0.0
+        elif self._ir_exposure != 0.0:
+            controls["ExposureValue"] = self._ir_exposure if on else 0.0
         if self._ir_gamma > 1.0:
             # The auto-levels stretch needs the cleanest source it can get:
             # ISP hardware denoise at HighQuality while night mode is active.
@@ -430,6 +466,52 @@ class CameraManager:
             logger.info("Night camera tuning %s → %s", "on" if on else "off", controls)
         except Exception:
             logger.warning("Night camera control rejected", exc_info=True)
+
+    def _update_day_ev(self, request) -> None:
+        """Auto day/colour exposure lift (#52): engage day_ev only while the
+        scene is dim, disengage in bright light, with value hysteresis.
+
+        The trigger is the AEC's analogue gain relative to the sensor's max.
+        Gain-based on purpose: the lift adds DIGITAL gain, so analogue gain
+        stays pinned once engaged — the signal doesn't move under its own
+        effect, so the latch can't oscillate. Night owns ExposureValue while
+        latched, so this bows out whenever IR mode is on.
+        """
+        if self._gain_max is None or self._ir_mode:
+            return
+        try:
+            gain = float(request.get_metadata().get("AnalogueGain", 0.0))
+        except Exception:
+            return  # metadata missing — skip this frame, never crash the callback
+        if gain <= 0.0:
+            return
+        # Value hysteresis: which state does THIS frame vote for?
+        if self._day_ev_active:
+            want = gain > self.DAY_EV_EXIT_FRAC * self._gain_max
+        else:
+            want = gain >= self.DAY_EV_ENTER_FRAC * self._gain_max
+        if want == self._day_ev_active:
+            self._day_ev_streak = 0
+            return
+        # Debounce: only flip after DAY_EV_STREAK consecutive contrary votes.
+        self._day_ev_streak += 1
+        if self._day_ev_streak >= self.DAY_EV_STREAK:
+            self._day_ev_active = want
+            self._day_ev_streak = 0
+            self._apply_day_ev(want)
+
+    def _apply_day_ev(self, active: bool) -> None:
+        """Poke ExposureValue to the day-lift state. No-op in night mode, which
+        owns the control (the detector already bows out, this double-guards)."""
+        if self._picam2 is None or self._ir_mode:
+            return
+        ev = self._day_ev if active else 0.0
+        try:
+            self._picam2.set_controls({"ExposureValue": ev})
+            logger.info("Day-EV auto-lift %s → ExposureValue=%.2f",
+                        "engaged" if active else "released", ev)
+        except Exception:
+            logger.warning("Day-EV control rejected", exc_info=True)
 
     def get_lores_frame(self, timeout: float = 1.0) -> np.ndarray | None:
         """
@@ -532,6 +614,8 @@ class CameraManager:
             arr = request.make_array("lores")
             if self._ir_grayscale:
                 self._update_night_mode(arr, request)
+            if self._day_ev != 0.0:
+                self._update_day_ev(request)
             y_plane = arr[:self._lores_h, :self._lores_w].copy()
             with self._lores_condition:
                 self._latest_lores_frame = y_plane
