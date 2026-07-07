@@ -156,6 +156,8 @@ Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Sur un système 
 | `camera.width` × `height` | 1920×1080 | Résolution capture / direct / enregistrement |
 | `camera.fps` | 30 | Cadence d'images |
 | `camera.bitrate` | 8000000 | Débit H264 (bit/s) — ~8 Mbps pour un 1080p30 net ; descendre à ~4 Mbps pour économiser la bande passante |
+| `camera.day_min_bitrate` | 500000 | Débit plancher (bit/s) que le gouverneur live peut demander de jour. C'est le minimum pratique de l'encodeur ; le remonter coûte de la bande passante/du stockage sans gain prouvé. Toujours plafonné par `camera.bitrate`. |
+| `camera.night_min_bitrate` | 3000000 | Même plancher une fois le mode nuit IR actif. L'étirement auto-levels amplifie le bruit sur toute l'image, qui se pixellise sous ~3 Mbps (testé sur le terrain, 4G comprise). Toujours plafonné par `camera.bitrate`. |
 | `camera.rotation` | 0 | 0 / 180 uniquement — l'ISP du Pi ne sait pas pivoter à 90°/270° (valeur ignorée avec un avertissement) |
 | `camera.full_fov` | true | Utilise toute la surface du capteur pour exploiter l'angle complet de l'objectif. La plupart des capteurs (IMX219, OV5647…) recadrent au centre en mode 1080p natif, ce qui rétrécit le champ ; cette option force un mode pleine vue (binned) puis redimensionne à la résolution de sortie. Mettre `false` pour le recadrage natif, plus net mais plus serré. |
 | `camera.sharpness` | 1.0 | Accentuation ISP (0.0–16.0). Essayer 1.5–2.0 pour compenser la mollesse de l'objectif. |

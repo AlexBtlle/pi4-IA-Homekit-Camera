@@ -64,12 +64,14 @@ class CameraManager:
     # the Zero 2 W alive. Reverted to Fast by day.
     _NR_FAST = 1
     _NR_HIGH_QUALITY = 2
-    # Encoder bitrate floors for the live governor's requests (#47). Field,
-    # 2026-07-05 night: at the 1 Mbps day floor the stretched night image
-    # (noise across the whole frame) macroblocks into mush — two screenshots
-    # seconds apart show the rate control converging from clean to unusable.
-    # Night raises the floor to keep the noisy 1080p encodable; day keeps the
-    # encoder's practical minimum (policy stays in the Node governor).
+    # Default encoder bitrate floors for the live governor's requests (#47).
+    # Field, 2026-07-05 night: at the 1 Mbps day floor the stretched night
+    # image (noise across the whole frame) macroblocks into mush — two
+    # screenshots seconds apart show the rate control converging from clean to
+    # unusable. Night raises the floor to keep the noisy 1080p encodable; day
+    # keeps the encoder's practical minimum (policy stays in the Node
+    # governor). Overridable per install via camera.day_min_bitrate /
+    # camera.night_min_bitrate (#53) — these are only the defaults.
     _DAY_MIN_BITRATE = 500_000
     NIGHT_MIN_BITRATE = 3_000_000
     # Night auto-levels (the digital AGC every commercial IR camera runs).
@@ -101,6 +103,12 @@ class CameraManager:
         self._fps = int(self._cfg.get("fps", 30))
         self._bitrate = int(self._cfg.get("bitrate", 4_000_000))
         self._current_bitrate = self._bitrate
+        # Governor floors, config-overridable (#53). Kept non-negative; the
+        # ceiling (self._bitrate) always wins in _clamp_bitrate, so an
+        # over-large night floor can never drive the encoder past what the
+        # user allowed.
+        self._day_min_bitrate = max(0, int(self._cfg.get("day_min_bitrate", self._DAY_MIN_BITRATE)))
+        self._night_min_bitrate = max(0, int(self._cfg.get("night_min_bitrate", self.NIGHT_MIN_BITRATE)))
         self._rotation = int(self._cfg.get("rotation", 0))
         self._lores_w = int(self._cfg.get("lores_width", 320))
         self._lores_h = int(self._cfg.get("lores_height", 240))
@@ -283,8 +291,8 @@ class CameraManager:
 
     def _clamp_bitrate(self, bps: int) -> int:
         """Floor depends on the time of day: the stretched night image costs
-        far more bits than a clean day frame (see NIGHT_MIN_BITRATE)."""
-        floor = self.NIGHT_MIN_BITRATE if self._ir_mode else self._DAY_MIN_BITRATE
+        far more bits than a clean day frame (see night_min_bitrate)."""
+        floor = self._night_min_bitrate if self._ir_mode else self._day_min_bitrate
         return min(max(int(bps), floor), self._bitrate)
 
     def set_bitrate(self, bps: int) -> int:
@@ -383,7 +391,7 @@ class CameraManager:
         # If a live session is holding the encoder below the night floor when
         # night falls, re-clamp it now — the governor's next request keeps
         # day behaviour after the flip back.
-        if on and self._current_bitrate < self.NIGHT_MIN_BITRATE:
+        if on and self._current_bitrate < self._night_min_bitrate:
             self.set_bitrate(self._current_bitrate)
         controls: dict = {}
         if self._ir_min_fps < self._fps:

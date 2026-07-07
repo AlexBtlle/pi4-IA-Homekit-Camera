@@ -338,6 +338,27 @@ def test_night_bitrate_floor_never_exceeds_the_ceiling():
     assert cam._clamp_bitrate(1_000_000) == 2_000_000
 
 
+def test_bitrate_floors_default_to_class_constants():
+    # No config keys → the historical hard-coded defaults still apply (#53).
+    cam = CameraManager({"camera": {"bitrate": 8_000_000}})
+    assert cam._day_min_bitrate == CameraManager._DAY_MIN_BITRATE
+    assert cam._night_min_bitrate == CameraManager.NIGHT_MIN_BITRATE
+
+
+def test_bitrate_floors_are_config_overridable():
+    # camera.day_min_bitrate / night_min_bitrate override the defaults (#53),
+    # and _clamp_bitrate honours the overridden values.
+    cam = CameraManager({"camera": {
+        "bitrate": 8_000_000,
+        "day_min_bitrate": 1_000_000,
+        "night_min_bitrate": 4_000_000,
+    }})
+    assert cam._clamp_bitrate(200_000) == 1_000_000            # day floor overridden up
+    cam._ir_mode = True
+    assert cam._clamp_bitrate(1_000_000) == 4_000_000          # night floor overridden
+    assert cam._clamp_bitrate(6_000_000) == 6_000_000          # above floor: honoured
+
+
 def test_ir_gamma_default_and_clamping():
     assert CameraManager({"camera": {}})._ir_gamma == 2.2
     assert CameraManager({"camera": {"ir_gamma": 99}})._ir_gamma == 5.0

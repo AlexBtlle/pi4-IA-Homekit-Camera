@@ -48,6 +48,15 @@ camera:
                           # (remote/4G ≈ 2 Mbps) and it returns here when they leave (#47).
   control_port: 8990      # localhost-only endpoint (HomeKit app → camera) driving the
                           # dynamic bitrate — never exposed on the network
+  day_min_bitrate: 500000   # bit/s — floor the live governor may request in daylight.
+                          # 500k is the encoder's practical minimum; a clean day frame
+                          # stays sharp there. Raising it costs bandwidth/HKSV storage
+                          # with NO proven benefit — don't, unless a real before/after
+                          # measurement says otherwise.
+  night_min_bitrate: 3000000 # bit/s — same floor once IR night mode is latched. The
+                          # auto-levels stretch amplifies sensor grain across the whole
+                          # frame, which macroblocks into mush below ~3 Mbps (field-tested,
+                          # 4G included). Both floors are always capped by `bitrate` above.
   rotation: 0             # 0 | 180 — the Pi ISP cannot rotate 90°/270° (no hardware
                           # transposition; such values are ignored with a warning)
   lores_width: 320        # motion-detection stream width  (Pi Zero 2W: 256)

@@ -155,6 +155,8 @@ Everything lives in one file: [`config.yaml`](config.yaml). On an installed syst
 | `camera.width` × `height` | 1920×1080 | Capture / stream / recording resolution |
 | `camera.fps` | 30 | Frame rate |
 | `camera.bitrate` | 8000000 | H264 bitrate (bit/s) — ~8 Mbps for crisp 1080p30; lower to ~4 Mbps to save bandwidth |
+| `camera.day_min_bitrate` | 500000 | Lowest bitrate (bit/s) the live governor may request in daylight. The encoder's practical floor; raising it costs bandwidth/storage with no proven gain. Always capped by `camera.bitrate`. |
+| `camera.night_min_bitrate` | 3000000 | Same floor once IR night mode is active. The auto-levels stretch amplifies grain across the frame, which macroblocks below ~3 Mbps (field-tested, 4G included). Always capped by `camera.bitrate`. |
 | `camera.rotation` | 0 | 0 / 180 only — the Pi ISP cannot rotate 90°/270° (ignored with a warning) |
 | `camera.full_fov` | true | Use the full sensor area so the lens shows its full angle. Most sensors (IMX219, OV5647…) center-crop in native 1080p mode, narrowing the view; this forces a full-FOV (binned) mode and scales to the output size. Set `false` for the sharper but narrower native crop. |
 | `camera.sharpness` | 1.0 | ISP edge sharpening (0.0–16.0). Try 1.5–2.0 to compensate for lens softness. |
