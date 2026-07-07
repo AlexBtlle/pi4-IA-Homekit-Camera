@@ -18,6 +18,7 @@ fatal() { echo "ERROR: $*" >&2; exit 1; }
 case "$(uname -m)" in
     aarch64) MEDIAMTX_ARCH="linux_arm64v8" ;;
     armv7l)  MEDIAMTX_ARCH="linux_arm7"    ;;
+    armv6l)  MEDIAMTX_ARCH="linux_armv6"   ;;  # Pi Zero W / Pi 1 (ARMv6)
     x86_64)  MEDIAMTX_ARCH="linux_amd64"   ;;
     *) fatal "Unsupported architecture: $(uname -m)" ;;
 esac
@@ -73,18 +74,28 @@ apt-get install -y \
 # the NodeSource apt repo, removing any stale repo file first so a previously
 # configured node_24 repo can't override the node_22 pin (the exact trap that
 # blocked v1: apt kept Node 24 because the old repo list still had priority).
-NODE_MAJOR=22
+NODE_MIN=18       # HAP-NodeJS runs on any active-ish LTS; 18 is the floor
+NODE_MAJOR=22     # target when we control the install (NodeSource, arm64/armv7)
 # `|| true`: with `set -euo pipefail`, a failing command substitution in an
 # assignment aborts the whole script. When node isn't installed yet, the
 # pipeline returns 127 — which previously killed install.sh right here.
 CURRENT_NODE_MAJOR="$(node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/' || true)"
-if [[ "${CURRENT_NODE_MAJOR}" != "${NODE_MAJOR}" ]]; then
+if [[ -n "${CURRENT_NODE_MAJOR}" && "${CURRENT_NODE_MAJOR}" -ge "${NODE_MIN}" ]]; then
+    info "Node.js $(node --version) already installed (>= ${NODE_MIN}), keeping it."
+elif [[ "$(uname -m)" == "armv6l" ]]; then
+    # NodeSource dropped ARMv6 long ago; Raspberry Pi OS ships a compatible
+    # nodejs (18.x on Bookworm) in its own archive. This is what makes the
+    # Pi Zero W (v1) installable at all.
+    info "ARMv6: installing Node.js from apt (NodeSource has no ARMv6 build)..."
+    apt-get install -y nodejs npm
+    NEW_MAJOR="$(node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/' || true)"
+    [[ -n "${NEW_MAJOR}" && "${NEW_MAJOR}" -ge "${NODE_MIN}" ]] \
+        || fatal "apt provides Node ${NEW_MAJOR:-none} (< ${NODE_MIN}). Install a newer Node manually."
+else
     info "Installing Node.js ${NODE_MAJOR}.x (current: ${CURRENT_NODE_MAJOR:-none})..."
     rm -f /etc/apt/sources.list.d/nodesource.list
     curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
     apt-get install -y --allow-downgrades nodejs
-else
-    info "Node.js $(node --version) already installed, skipping."
 fi
 
 # -----------------------------------------------------------------------
