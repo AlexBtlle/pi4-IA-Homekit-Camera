@@ -16,6 +16,7 @@ No Homebridge, no plugins, no cloud account, no admin dashboard to babysit. The 
 - **HomeKit Secure Video** — motion-triggered recordings stored in iCloud, viewable directly in the Home app's timeline. A rolling 4-second prebuffer means every clip starts before the motion event.
 - **Smart classification** — People / Animals / Vehicles detection is done by your Apple home hub (Apple TV / HomePod), exactly like commercial HKSV cameras. The Pi just reports motion, cheaply and reliably.
 - **Rich notifications** — motion alerts with a snapshot on your iPhone.
+- **Night vision** *(beta)* — under IR illumination the stream and snapshot switch to grayscale (killing the 850 nm pink cast), and dim colour scenes are brightened automatically as the light drops. Detection and correction run on-device, with hysteresis so the picture doesn't flicker.
 - **Status dashboard** — a built-in web page (`http://<pi>.local:8080`) shows the pairing QR code and a live health view: overall status, temperature & throttle state, CPU load, RAM/swap, uptime, per-service status, snapshot freshness, HKSV state and last motion.
 - **Lightweight** — ~210 MB RAM with an active stream, low CPU load, three small systemd services.
 - **Private** — everything runs on your Pi. The RTSP stream is bound to localhost (never exposed on the network); the only cloud involved is your own iCloud (for HKSV recordings, end-to-end encrypted by Apple).
@@ -24,7 +25,7 @@ No Homebridge, no plugins, no cloud account, no admin dashboard to babysit. The 
 
 | | |
 |---|---|
-| **Board** | Raspberry Pi 4 (any RAM size), Pi Zero 2 W, Pi 3. |
+| **Board** | Raspberry Pi 4 (any RAM size), Pi Zero 2 W, Pi 3. **Not the Pi 5 yet** — it has no hardware H264 encoder (on the roadmap). |
 | **Camera** | Any CSI camera module supported by `libcamera` (Camera Module 2/3, HQ, NoIR…) |
 | **OS** | Raspberry Pi OS **64-bit** |
 | **Apple side** | iPhone + a home hub (Apple TV 4K or HomePod) |

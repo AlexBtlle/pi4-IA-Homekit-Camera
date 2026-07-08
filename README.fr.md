@@ -16,6 +16,7 @@ Pas de Homebridge, pas de plugin, pas de compte cloud, pas d'interface d'adminis
 - **HomeKit Secure Video** — enregistrements déclenchés par le mouvement, stockés dans iCloud, lisibles directement dans l'historique de l'app Maison. Un prébuffer glissant de 4 secondes fait démarrer chaque clip avant l'événement.
 - **Classification intelligente** — la détection Personnes / Animaux / Véhicules est faite par votre concentrateur Apple (Apple TV / HomePod), exactement comme les caméras HKSV du commerce. Le Pi se contente de signaler le mouvement, de façon fiable et économe.
 - **Notifications riches** — alertes de mouvement avec snapshot sur l'iPhone.
+- **Vision nocturne** *(bêta)* — sous éclairage IR, le flux et la miniature passent en niveaux de gris (supprimant la dominante rose du 850 nm), et les scènes couleur sombres sont éclaircies automatiquement à mesure que la lumière baisse. Détection et correction embarquées, avec hystérésis pour éviter le scintillement.
 - **Tableau de bord** — une page web intégrée (`http://<pi>.local:8080`) affiche le QR code d'appairage et un état en temps réel : statut global, température & throttling, charge CPU, RAM/swap, uptime, statut par service, fraîcheur du snapshot, état HKSV et dernier mouvement.
 - **Léger** — ~210 Mo de RAM avec un flux actif, faible charge CPU, trois petits services systemd.
 - **Privé** — tout tourne sur votre Pi. Le flux RTSP est restreint à localhost (jamais exposé sur le réseau) ; le seul cloud impliqué est votre propre iCloud (pour les enregistrements HKSV, chiffrés de bout en bout par Apple).
@@ -24,7 +25,7 @@ Pas de Homebridge, pas de plugin, pas de compte cloud, pas d'interface d'adminis
 
 | | |
 |---|---|
-| **Carte** | Raspberry Pi 4 (toutes tailles de RAM), Pi Zero 2 W, Pi 3. |
+| **Carte** | Raspberry Pi 4 (toutes tailles de RAM), Pi Zero 2 W, Pi 3. **Pas encore le Pi 5** — il n'a pas d'encodeur H264 matériel (au programme). |
 | **Caméra** | Tout module CSI supporté par `libcamera` (Camera Module 2/3, HQ, NoIR…) |
 | **OS** | Raspberry Pi OS **64 bits** |
 | **Côté Apple** | iPhone + un concentrateur (Apple TV 4K ou HomePod) |
