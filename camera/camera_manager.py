@@ -52,6 +52,16 @@ class CameraManager:
     # Exit is slower than entry so car headlights at night can't flip us back.
     IR_ENTRY_FRAMES = 15      # ≈3 s at 5 fps before switching to grayscale
     IR_EXIT_FRAMES = 50       # ≈10 s at 5 fps before returning to colour
+    # Day-lift auto trigger (#52), on the AEC's Lux estimate. Lux, not analogue
+    # gain: the sensor's AnalogueGain max reads as the *hardware* max (63.9x on
+    # OV5647) while the AEC operationally tops out ~8x, so a gain fraction never
+    # fires. Lux is the AEC's absolute scene-illuminance estimate (image
+    # brightness ÷ total exposure), independent of any processing we apply — no
+    # feedback. Value hysteresis, thresholds from field data (this rig: dim room
+    # 14-34 lux, one shutter open ~126; the lift engaged cleanly at 43 lux).
+    DAY_LIFT_LUX_ENTER = 45.0   # engage the lift below this scene illuminance
+    DAY_LIFT_LUX_EXIT = 90.0    # release once the scene climbs back above this
+    DAY_LIFT_STREAK = 8         # consecutive confirming frames (~1.5 s at 5 fps)
     # AeExposureMode enum (libcamera): biases the AE shutter/gain split. Night
     # mode uses Long so the budget freed by a relaxed FrameDurationLimits is
     # spent on shutter time (real light) before analogue gain (noise).
@@ -64,12 +74,14 @@ class CameraManager:
     # the Zero 2 W alive. Reverted to Fast by day.
     _NR_FAST = 1
     _NR_HIGH_QUALITY = 2
-    # Encoder bitrate floors for the live governor's requests (#47). Field,
-    # 2026-07-05 night: at the 1 Mbps day floor the stretched night image
-    # (noise across the whole frame) macroblocks into mush — two screenshots
-    # seconds apart show the rate control converging from clean to unusable.
-    # Night raises the floor to keep the noisy 1080p encodable; day keeps the
-    # encoder's practical minimum (policy stays in the Node governor).
+    # Default encoder bitrate floors for the live governor's requests (#47).
+    # Field, 2026-07-05 night: at the 1 Mbps day floor the stretched night
+    # image (noise across the whole frame) macroblocks into mush — two
+    # screenshots seconds apart show the rate control converging from clean to
+    # unusable. Night raises the floor to keep the noisy 1080p encodable; day
+    # keeps the encoder's practical minimum (policy stays in the Node
+    # governor). Overridable per install via camera.day_min_bitrate /
+    # camera.night_min_bitrate (#53) — these are only the defaults.
     _DAY_MIN_BITRATE = 500_000
     NIGHT_MIN_BITRATE = 3_000_000
     # Night auto-levels (the digital AGC every commercial IR camera runs).
@@ -101,6 +113,12 @@ class CameraManager:
         self._fps = int(self._cfg.get("fps", 30))
         self._bitrate = int(self._cfg.get("bitrate", 4_000_000))
         self._current_bitrate = self._bitrate
+        # Governor floors, config-overridable (#53). Kept non-negative; the
+        # ceiling (self._bitrate) always wins in _clamp_bitrate, so an
+        # over-large night floor can never drive the encoder past what the
+        # user allowed.
+        self._day_min_bitrate = max(0, int(self._cfg.get("day_min_bitrate", self._DAY_MIN_BITRATE)))
+        self._night_min_bitrate = max(0, int(self._cfg.get("night_min_bitrate", self.NIGHT_MIN_BITRATE)))
         self._rotation = int(self._cfg.get("rotation", 0))
         self._lores_w = int(self._cfg.get("lores_width", 320))
         self._lores_h = int(self._cfg.get("lores_height", 240))
@@ -110,6 +128,21 @@ class CameraManager:
         self._sharpness = float(self._cfg.get("sharpness", 1.0))
         self._contrast = float(self._cfg.get("contrast", 1.0))
         self._saturation = float(self._cfg.get("saturation", 1.0))
+
+        # Daytime/colour brightening for dim scenes (#52) — AUTO: the night
+        # auto-levels applied in colour. The scene's luma is stretched from its
+        # own percentiles (p5→p99, black point anchored so it doesn't go milky)
+        # and shaped by this gamma, via cv2.LUT on the main frame — engaged only
+        # when the AEC's Lux says the scene is dark (see _update_day_lift).
+        # ExposureValue was tried first and proved inert at this light (the AEC
+        # ignores the bias — dg stays 1.0), hence the direct pixel lift. 1.0 =
+        # feature off (identity). Clamped to [1, 4].
+        self._day_gamma = max(1.0, min(4.0, float(self._cfg.get("day_gamma", 1.0))))
+        self._day_lift_active = False   # hysteresis latch (dim-scene lift engaged)
+        self._day_lift_streak = 0       # consecutive frames voting the other way
+        self._day_lut: np.ndarray | None = None  # auto-levels LUT, rebuilt per frame
+        self._day_low: float | None = None       # EMA'd black point (lores p5)
+        self._day_high: float | None = None       # EMA'd white point (lores p99)
 
         # Night vision (beta): under 850 nm IR light the image is monochrome with
         # a pink cast. Detection reads the *untouched* lores chroma planes every
@@ -200,6 +233,9 @@ class CameraManager:
                 "Sharpness": self._sharpness,
                 "Contrast": self._contrast,
                 "Saturation": self._saturation,
+                # ExposureValue starts at libcamera's 0.0 default: the day-EV
+                # auto-lift (#52) engages it only once the scene proves dim,
+                # and night mode drives it via ir_exposure.
             },
         )
 
@@ -236,6 +272,12 @@ class CameraManager:
 
         self._picam2.configure(video_cfg)
         self._picam2.pre_callback = self._lores_callback
+
+        if self._day_gamma > 1.0:
+            logger.info(
+                "Day-lift armed (day_gamma=%.1f, engage ≤%.0f lux / release ≥%.0f lux)",
+                self._day_gamma, self.DAY_LIFT_LUX_ENTER, self.DAY_LIFT_LUX_EXIT,
+            )
 
         self._pipe_r, self._pipe_w = os.pipe()
         # Enlarge the pipe from the 64 KB default (~65 ms of video at 8 Mbps)
@@ -283,8 +325,8 @@ class CameraManager:
 
     def _clamp_bitrate(self, bps: int) -> int:
         """Floor depends on the time of day: the stretched night image costs
-        far more bits than a clean day frame (see NIGHT_MIN_BITRATE)."""
-        floor = self.NIGHT_MIN_BITRATE if self._ir_mode else self._DAY_MIN_BITRATE
+        far more bits than a clean day frame (see night_min_bitrate)."""
+        floor = self._night_min_bitrate if self._ir_mode else self._day_min_bitrate
         return min(max(int(bps), floor), self._bitrate)
 
     def set_bitrate(self, bps: int) -> int:
@@ -371,8 +413,11 @@ class CameraManager:
           that makes ExposureValue saturate. This is what actually adds photons,
           and it adds no gain-noise. Paired with AeExposureMode=Long so the AEC
           spends that budget on shutter time before analogue gain.
-        - ExposureValue: bias the AE target up (only useful once the relaxed
-          shutter ceiling gives the AEC room to reach it).
+        - ExposureValue: bias the AE target up at night (only useful once the
+          relaxed shutter ceiling gives the AEC room to reach it). The day-EV
+          auto-lift (#52) owns this control by day; night takes it over and the
+          detector is reset on the flip back, so a dim-day lift can never leak
+          into night and re-evaluates from scratch once colour returns.
 
         Each knob is skipped when its config leaves it at the daylight default,
         so a plain install is untouched. None-guarded and wrapped so a rejected
@@ -383,7 +428,7 @@ class CameraManager:
         # If a live session is holding the encoder below the night floor when
         # night falls, re-clamp it now — the governor's next request keeps
         # day behaviour after the flip back.
-        if on and self._current_bitrate < self.NIGHT_MIN_BITRATE:
+        if on and self._current_bitrate < self._night_min_bitrate:
             self.set_bitrate(self._current_bitrate)
         controls: dict = {}
         if self._ir_min_fps < self._fps:
@@ -393,6 +438,12 @@ class CameraManager:
             controls["AeExposureMode"] = self._AE_EXPOSURE_LONG if on else self._AE_EXPOSURE_NORMAL
         if self._ir_exposure != 0.0:
             controls["ExposureValue"] = self._ir_exposure if on else 0.0
+        # The day-lift (#52) bows out under night — the callback prioritises the
+        # night LUT — so reset it on both transitions: it re-evaluates cleanly
+        # in colour once day returns, and its ISP denoise can't linger.
+        if self._day_gamma > 1.0:
+            self._day_lift_active = False
+            self._day_lift_streak = 0
         if self._ir_gamma > 1.0:
             # The auto-levels stretch needs the cleanest source it can get:
             # ISP hardware denoise at HighQuality while night mode is active.
@@ -406,6 +457,55 @@ class CameraManager:
             logger.info("Night camera tuning %s → %s", "on" if on else "off", controls)
         except Exception:
             logger.warning("Night camera control rejected", exc_info=True)
+
+    def _update_day_lift(self, request) -> None:
+        """Auto day/colour brightening (#52): latch the gamma lift on while the
+        scene is dim, off in bright light, with value hysteresis.
+
+        The trigger is the AEC's Lux estimate (absolute scene illuminance).
+        Lux, not analogue gain: the reported gain max is the sensor's hardware
+        max (63.9x on OV5647), not the AEC's operational ~8x, so a gain fraction
+        never fires. The latch drives the LUT applied in the capture callback;
+        night owns the frame while latched, so this bows out in IR mode.
+        """
+        if self._ir_mode:
+            return
+        try:
+            lux = float(request.get_metadata().get("Lux", -1.0))
+        except Exception:
+            return  # metadata missing — skip this frame, never crash the callback
+        if lux < 0.0:
+            return  # this tuning doesn't report Lux — feature stays inert
+        # Value hysteresis: which state does THIS frame vote for?
+        if self._day_lift_active:
+            want = lux < self.DAY_LIFT_LUX_EXIT    # stay engaged until bright enough
+        else:
+            want = lux <= self.DAY_LIFT_LUX_ENTER  # engage only when clearly dim
+        if want == self._day_lift_active:
+            self._day_lift_streak = 0
+            return
+        # Debounce: only flip after DAY_LIFT_STREAK consecutive contrary votes.
+        self._day_lift_streak += 1
+        if self._day_lift_streak >= self.DAY_LIFT_STREAK:
+            self._day_lift_active = want
+            self._day_lift_streak = 0
+            self._apply_day_lift(want, lux)
+
+    def _apply_day_lift(self, active: bool, lux: float) -> None:
+        """Toggle ISP denoise for the gamma lift (the LUT itself is applied per
+        frame in the callback from the _day_lift_active latch). The digital lift
+        raises the sensor's grain, so clean it in hardware at HighQuality while
+        engaged, exactly as night mode does — free on the ISP. No-op in night
+        mode, which owns the control (the detector already bows out)."""
+        if self._picam2 is None or self._ir_mode:
+            return
+        nr = self._NR_HIGH_QUALITY if active else self._NR_FAST
+        try:
+            self._picam2.set_controls({"NoiseReductionMode": nr})
+            logger.info("Day-lift %s at %.0f lux (day_gamma=%.1f)",
+                        "engaged" if active else "released", lux, self._day_gamma)
+        except Exception:
+            logger.warning("Day-lift denoise control rejected", exc_info=True)
 
     def get_lores_frame(self, timeout: float = 1.0) -> np.ndarray | None:
         """
@@ -508,22 +608,33 @@ class CameraManager:
             arr = request.make_array("lores")
             if self._ir_grayscale:
                 self._update_night_mode(arr, request)
+            if self._day_gamma > 1.0:
+                self._update_day_lift(request)
+                if self._day_lift_active:
+                    self._refresh_day_lut(arr)     # track the black point every frame
+                elif self._day_lut is not None:
+                    self._day_lut = None           # dropped: stop applying by day
+                    self._day_low = self._day_high = None
             y_plane = arr[:self._lores_h, :self._lores_w].copy()
             with self._lores_condition:
                 self._latest_lores_frame = y_plane
                 self._lores_condition.notify_all()
 
-        # Night mode: brighten the main frame's luma through the gamma LUT and
-        # neutralise its chroma in place (U and V → 128 = perfectly grey)
-        # before the H264 encoder consumes the buffer. Stream and snapshot both
-        # come out brightened grayscale; ISP stays untouched. cv2.LUT writes
-        # into the mapped buffer directly (dst=) — no per-frame allocation.
-        if self._ir_mode and self._MappedArray is not None:
+        # Brighten the main frame's luma through a gamma LUT before the H264
+        # encoder consumes it. Night neutralises the chroma too (U/V → 128 =
+        # grayscale); the day-lift (#52) keeps the colour. cv2.LUT writes into
+        # the mapped buffer directly (dst=) — no per-frame allocation — so the
+        # stream and the snapshot both inherit the brightened frame.
+        if self._MappedArray is not None and (self._ir_mode or self._day_lift_active):
             with self._MappedArray(request, "main") as m:
-                if self._ir_gamma_lut is not None:
+                if self._ir_mode:
+                    if self._ir_gamma_lut is not None:
+                        y = m.array[:self._height]
+                        cv2.LUT(y, self._ir_gamma_lut, dst=y)
+                    m.array[self._height:, :] = 128        # U/V → grey (night only)
+                elif self._day_lut is not None:
                     y = m.array[:self._height]
-                    cv2.LUT(y, self._ir_gamma_lut, dst=y)
-                m.array[self._height:, :] = 128
+                    cv2.LUT(y, self._day_lut, dst=y)       # colour preserved
 
         if (self._snapshot_interval > 0
                 and time.monotonic() - self._last_snapshot >= self._snapshot_interval):
@@ -577,6 +688,29 @@ class CameraManager:
             self._night_high += a * (high - self._night_high)
         self._ir_gamma_lut = np.array(
             self._build_night_lut(self._night_low, self._night_high, self._ir_gamma),
+            dtype=np.uint8,
+        )
+
+    def _refresh_day_lut(self, lores_arr) -> None:
+        """Rebuild the day-lift LUT from this frame's lores-luma percentiles.
+
+        The same auto-levels as night — anchoring the black point on the scene's
+        p5 is what stops the lift going milky (a pure gamma from 0 lifts the
+        noise pedestal to grey) — but shaped by day_gamma and applied to luma
+        only, so the frame stays in colour. EMA-smoothed against flicker; the
+        lores is never touched, so the statistics see the raw sensor.
+        """
+        y = lores_arr[:self._lores_h, :self._lores_w]
+        low = float(np.percentile(y, self.NIGHT_LUT_LOW_PCT))
+        high = float(np.percentile(y, self.NIGHT_LUT_HIGH_PCT))
+        if self._day_low is None or self._day_high is None:
+            self._day_low, self._day_high = low, high
+        else:
+            a = self.NIGHT_STATS_EMA
+            self._day_low += a * (low - self._day_low)
+            self._day_high += a * (high - self._day_high)
+        self._day_lut = np.array(
+            self._build_night_lut(self._day_low, self._day_high, self._day_gamma),
             dtype=np.uint8,
         )
 

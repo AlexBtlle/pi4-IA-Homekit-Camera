@@ -18,6 +18,7 @@ fatal() { echo "ERROR: $*" >&2; exit 1; }
 case "$(uname -m)" in
     aarch64) MEDIAMTX_ARCH="linux_arm64v8" ;;
     armv7l)  MEDIAMTX_ARCH="linux_arm7"    ;;
+    armv6l)  MEDIAMTX_ARCH="linux_armv6"   ;;  # Pi Zero W / Pi 1 (ARMv6)
     x86_64)  MEDIAMTX_ARCH="linux_amd64"   ;;
     *) fatal "Unsupported architecture: $(uname -m)" ;;
 esac
@@ -50,7 +51,7 @@ apt-get install -y \
     python3-libcamera \
     python3-numpy \
     python3-opencv \
-    python3-venv \
+    python3-yaml \
     ffmpeg \
     rpicam-apps \
     curl \
@@ -61,9 +62,10 @@ apt-get install -y \
     vmtouch \
     avahi-daemon
 
-# numpy and opencv (cv2) come from apt above — prebuilt pip wheels are
-# unreliable across Raspberry Pi OS / Python versions. The venv accesses
-# them via --system-site-packages.
+# EVERY Python dependency comes from apt (numpy, cv2, picamera2, yaml):
+# prebuilt pip wheels are unreliable across Raspberry Pi OS / Python
+# versions, and apt packages exist for every arch Raspbian builds — ARMv6
+# included. No venv, no pip, no PyPI network dependency.
 
 # -----------------------------------------------------------------------
 # 2. Node.js 22 (for the HAP-NodeJS HomeKit app)
@@ -72,18 +74,28 @@ apt-get install -y \
 # the NodeSource apt repo, removing any stale repo file first so a previously
 # configured node_24 repo can't override the node_22 pin (the exact trap that
 # blocked v1: apt kept Node 24 because the old repo list still had priority).
-NODE_MAJOR=22
+NODE_MIN=18       # HAP-NodeJS runs on any active-ish LTS; 18 is the floor
+NODE_MAJOR=22     # target when we control the install (NodeSource, arm64/armv7)
 # `|| true`: with `set -euo pipefail`, a failing command substitution in an
 # assignment aborts the whole script. When node isn't installed yet, the
 # pipeline returns 127 — which previously killed install.sh right here.
 CURRENT_NODE_MAJOR="$(node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/' || true)"
-if [[ "${CURRENT_NODE_MAJOR}" != "${NODE_MAJOR}" ]]; then
+if [[ -n "${CURRENT_NODE_MAJOR}" && "${CURRENT_NODE_MAJOR}" -ge "${NODE_MIN}" ]]; then
+    info "Node.js $(node --version) already installed (>= ${NODE_MIN}), keeping it."
+elif [[ "$(uname -m)" == "armv6l" ]]; then
+    # NodeSource dropped ARMv6 long ago; Raspberry Pi OS ships a compatible
+    # nodejs (18.x on Bookworm) in its own archive. This is what makes the
+    # Pi Zero W (v1) installable at all.
+    info "ARMv6: installing Node.js from apt (NodeSource has no ARMv6 build)..."
+    apt-get install -y nodejs npm
+    NEW_MAJOR="$(node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/' || true)"
+    [[ -n "${NEW_MAJOR}" && "${NEW_MAJOR}" -ge "${NODE_MIN}" ]] \
+        || fatal "apt provides Node ${NEW_MAJOR:-none} (< ${NODE_MIN}). Install a newer Node manually."
+else
     info "Installing Node.js ${NODE_MAJOR}.x (current: ${CURRENT_NODE_MAJOR:-none})..."
     rm -f /etc/apt/sources.list.d/nodesource.list
     curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
     apt-get install -y --allow-downgrades nodejs
-else
-    info "Node.js $(node --version) already installed, skipping."
 fi
 
 # -----------------------------------------------------------------------
@@ -209,17 +221,17 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# 5. Python virtual environment
+# 5. Python runtime — system python + apt packages only (no venv, no pip)
 # -----------------------------------------------------------------------
-VENV="${INSTALL_DIR}/venv"
-if [[ ! -d "${VENV}" ]]; then
-    info "Creating Python virtual environment..."
-    # --system-site-packages gives access to apt-installed picamera2/libcamera
-    python3 -m venv --system-site-packages "${VENV}"
+# The venv + pip dance existed to install exactly ONE package (PyYAML) that
+# apt ships as python3-yaml. Dropping it saves 1-2 min of install on a
+# Zero 2 W (the pip self-upgrade alone was 30-60 s), removes the PyPI
+# network dependency, frees ~70 MB of SD, and keeps every Python dependency
+# ARMv6-buildable from the Raspbian archive.
+if [[ -d "${INSTALL_DIR}/venv" ]]; then
+    info "Removing the legacy virtualenv (Python deps now come from apt)..."
+    rm -rf "${INSTALL_DIR}/venv"
 fi
-"${VENV}/bin/pip" install --quiet --upgrade pip
-"${VENV}/bin/pip" install --quiet -r "${SRC_DIR}/requirements.txt"
-info "Python dependencies installed."
 
 # -----------------------------------------------------------------------
 # 6. HomeKit app: build + pairing secrets (unique MAC + PIN + setup ID)

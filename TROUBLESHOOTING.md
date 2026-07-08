@@ -372,3 +372,98 @@ The Home app then sees the same camera — no re-pairing needed.
   again.
 - **"Not certified" warning** — normal for any DIY HomeKit accessory. Tap *Add
   Anyway*.
+
+---
+
+## Pi Zero W v1 / Pi 1 (ARMv6) — unofficial, here be dragons
+
+**Not a supported target.** The primary board is the Pi Zero 2 W. The single
+1 GHz ARM11 core (ARMv6, no NEON) with 512 MB is right at the edge — but a
+**live** HomeKit camera does run on it, field-tested. This is a recipe for the
+curious, not a supported configuration.
+
+| | On a Zero W v1 |
+|---|---|
+| Live view | ✅ works, ~4-5 s to appear (with the local static ffmpeg below) |
+| Snapshot / dashboard | ✅ works |
+| Motion → notifications | ✅ works (webhook may time out during the Node boot — harmless, it retries) |
+| **HKSV (iCloud recording)** | ❌ **not recommended** — see below |
+
+**HKSV is not recommended on the v1.** During an active live the single core
+already sits at ~90-96 % (most of it Node/HAP doing SRTP in JS). HKSV adds a
+*continuous* prebuffer ffmpeg plus fragmented-MP4 muxing on top of that same
+core — it will tip an already-saturated CPU over. Run this board as **live +
+motion notifications**, and leave "Recording Options" on *Stream Only* (or off).
+If you want iCloud recording, use a Zero 2 W.
+
+### Recipe
+
+1. **Flash 32-bit Raspberry Pi OS.** The 64-bit image does not boot on ARMv6.
+   The Foundation's 32-bit build is compiled for ARMv6, so every apt package is
+   compatible.
+
+2. **Get the camera detected.** If `rpicam-hello --list-cameras` shows nothing,
+   `camera_auto_detect=1` in `/boot/firmware/config.txt` usually isn't enough on
+   a Zero — add the explicit overlay for your sensor and reboot:
+   ```bash
+   echo "dtoverlay=ov5647" | sudo tee -a /boot/firmware/config.txt   # or imx219 / imx708
+   sudo reboot
+   ```
+
+3. **Add swap** so `npm ci` + `tsc` don't get OOM-killed on 512 MB:
+   ```bash
+   sudo dphys-swapfile swapoff
+   sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=1024/' /etc/dphys-swapfile
+   sudo dphys-swapfile setup && sudo dphys-swapfile swapon
+   ```
+
+4. **Install normally.** `install.sh` already handles ARMv6: it keeps the
+   apt-provided Node (NodeSource has no ARMv6 build) and fetches the
+   `linux_armv6` mediamtx. The prebuilt static ffmpeg is arm64-only, so it
+   falls back to the system ffmpeg here — which is exactly the slow part we fix
+   in step 6.
+   ```bash
+   git clone https://github.com/AlexBtlle/pi4-IA-Homekit-Camera.git
+   cd pi4-IA-Homekit-Camera && sudo bash install.sh
+   ```
+
+5. **Calm the config for the single core** (`/opt/pi4cam/config.yaml`). MOG2 has
+   no NEON on ARMv6, so `analysis_fps` is the dominant CPU lever:
+   ```yaml
+   camera:
+     width: 1280
+     height: 720
+     fps: 15
+     bitrate: 3000000
+     lores_width: 160
+     lores_height: 120
+     snapshot_interval: 15
+   detection:
+     analysis_fps: 2
+     min_motion_area: 200   # recalibrated for 160×120 lores
+   ```
+
+6. **Build the static ffmpeg locally — the decisive lever.** Debian's ffmpeg
+   costs ~6 s just to *start* on this core (measured: 6.4 s real for 3.1 s CPU —
+   the shared-library / memory-reclaim tax, see the "Live stream is slow" section
+   above), and the live path spawns it twice. The prebuilt release is arm64-only,
+   so build it on the Pi once (single core, `-j1`; ~45-90 min, run detached):
+   ```bash
+   cd ~/pi4-IA-Homekit-Camera
+   sudo JOBS=1 nohup bash scripts/build-static-ffmpeg.sh > /tmp/ffmpeg-build.log 2>&1 &
+   tail -f /tmp/ffmpeg-build.log      # Ctrl-C stops watching, not the build
+   ```
+   When it finishes it installs to `/opt/pi4cam/bin/ffmpeg-static`; the app
+   auto-detects it on restart. Verify and restart:
+   ```bash
+   time /opt/pi4cam/bin/ffmpeg-static -version >/dev/null   # ~0.02 s vs 6.4 s
+   sudo systemctl restart pi4cam-homekit
+   ```
+
+### Measured reality (this rig, IMX219, calmed config, local static ffmpeg)
+
+- Live appears in **~4-5 s** (down from ~25-30 s on the system ffmpeg).
+- Idle (camera + MOG2, no viewer): load ~1.4.
+- During an active live: single core **~90-96 %**, load ~3.3-3.7, RAM 250/427 MB
+  with swap barely touched. Busy but functional — and with no headroom left for
+  HKSV, hence the recommendation above.

@@ -14,7 +14,7 @@ SupplementaryGroups=video
 # inherited by the child ffmpeg too (#41).
 Environment=MALLOC_ARENA_MAX=2
 WorkingDirectory=/opt/pi4cam
-ExecStart=/opt/pi4cam/venv/bin/python -m camera.main
+ExecStart=/usr/bin/python3 -m camera.main
 Restart=on-failure
 RestartSec=5
 # Give the camera time to initialise after boot

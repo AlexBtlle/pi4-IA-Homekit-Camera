@@ -155,11 +155,14 @@ Everything lives in one file: [`config.yaml`](config.yaml). On an installed syst
 | `camera.width` × `height` | 1920×1080 | Capture / stream / recording resolution |
 | `camera.fps` | 30 | Frame rate |
 | `camera.bitrate` | 8000000 | H264 bitrate (bit/s) — ~8 Mbps for crisp 1080p30; lower to ~4 Mbps to save bandwidth |
+| `camera.day_min_bitrate` | 500000 | Lowest bitrate (bit/s) the live governor may request in daylight. The encoder's practical floor; raising it costs bandwidth/storage with no proven gain. Always capped by `camera.bitrate`. |
+| `camera.night_min_bitrate` | 3000000 | Same floor once IR night mode is active. The auto-levels stretch amplifies grain across the frame, which macroblocks below ~3 Mbps (field-tested, 4G included). Always capped by `camera.bitrate`. |
 | `camera.rotation` | 0 | 0 / 180 only — the Pi ISP cannot rotate 90°/270° (ignored with a warning) |
 | `camera.full_fov` | true | Use the full sensor area so the lens shows its full angle. Most sensors (IMX219, OV5647…) center-crop in native 1080p mode, narrowing the view; this forces a full-FOV (binned) mode and scales to the output size. Set `false` for the sharper but narrower native crop. |
 | `camera.sharpness` | 1.0 | ISP edge sharpening (0.0–16.0). Try 1.5–2.0 to compensate for lens softness. |
 | `camera.contrast` | 1.0 | ISP contrast (0.0–32.0). |
 | `camera.saturation` | 1.0 | ISP colour saturation (0.0–32.0). Try 1.2–1.5 for richer colours. |
+| `camera.day_gamma` | 1.0 | **(beta)** Automatic brightening for dim **colour** scenes — a gamma curve on the frame's luma (lifts shadows, preserves highlights), kept in colour. Engaged **only when the scene is dark** (AEC Lux estimate below threshold), with hysteresis; in daylight the trigger stays off and the image is untouched — a sunny room is never over-exposed. At that light the sensor is already pinned, so it's a digital lift (brighter but noisier; ISP denoise cleans it). Night/IR uses its own path (`ir_grayscale`). Higher = brighter shadows; 2.5 is field-tested for a dim room at dusk, 1.0 = off. |
 | `camera.ir_grayscale` | false | **(beta)** Auto-switch the stream **and** snapshot to grayscale under IR night vision, removing the 850 nm pink cast. IR is detected from the chroma statistics of the detection stream (with hysteresis), and the effect neutralises the frame's colour planes before encoding — day/night transitions are measured on real colour data. |
 | `camera.snapshot_path` | /dev/shm/pi4cam-snapshot.jpg | Where the JPEG snapshot is written — a tmpfs (RAM) path, to keep the 24/7 rewrites off the SD card. |
 | `homekit.camera_name` | Pi Camera | Name shown in the Home app |

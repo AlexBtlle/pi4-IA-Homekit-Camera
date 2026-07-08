@@ -3,6 +3,8 @@
 Covers the pure frame classifier (_is_ir_frame) and the hysteresis state
 machine (_apply_ir_vote) that the v1 probe design never had tests for.
 """
+import types
+
 from camera.camera_manager import CameraManager
 
 ENTRY = CameraManager.IR_ENTRY_FRAMES
@@ -338,9 +340,135 @@ def test_night_bitrate_floor_never_exceeds_the_ceiling():
     assert cam._clamp_bitrate(1_000_000) == 2_000_000
 
 
+def test_bitrate_floors_default_to_class_constants():
+    # No config keys → the historical hard-coded defaults still apply (#53).
+    cam = CameraManager({"camera": {"bitrate": 8_000_000}})
+    assert cam._day_min_bitrate == CameraManager._DAY_MIN_BITRATE
+    assert cam._night_min_bitrate == CameraManager.NIGHT_MIN_BITRATE
+
+
+def test_bitrate_floors_are_config_overridable():
+    # camera.day_min_bitrate / night_min_bitrate override the defaults (#53),
+    # and _clamp_bitrate honours the overridden values.
+    cam = CameraManager({"camera": {
+        "bitrate": 8_000_000,
+        "day_min_bitrate": 1_000_000,
+        "night_min_bitrate": 4_000_000,
+    }})
+    assert cam._clamp_bitrate(200_000) == 1_000_000            # day floor overridden up
+    cam._ir_mode = True
+    assert cam._clamp_bitrate(1_000_000) == 4_000_000          # night floor overridden
+    assert cam._clamp_bitrate(6_000_000) == 6_000_000          # above floor: honoured
+
+
 def test_ir_gamma_default_and_clamping():
     assert CameraManager({"camera": {}})._ir_gamma == 2.2
     assert CameraManager({"camera": {"ir_gamma": 99}})._ir_gamma == 5.0
     assert CameraManager({"camera": {"ir_gamma": 0.2}})._ir_gamma == 1.0
-    # the LUT is built at runtime from scene stats — never at construction
+
+
+def test_day_gamma_default_and_clamping():
+    # Off by default (#52, 1.0 = identity curve), clamped to [1, 4].
+    assert CameraManager({"camera": {}})._day_gamma == 1.0
+    assert CameraManager({"camera": {"day_gamma": 2.2}})._day_gamma == 2.2
+    assert CameraManager({"camera": {"day_gamma": 99}})._day_gamma == 4.0
+    assert CameraManager({"camera": {"day_gamma": 0.2}})._day_gamma == 1.0
+
+
+def _day_lift_manager(day_gamma=2.2):
+    cam = CameraManager({"camera": {"day_gamma": day_gamma}})
+    cam._ctrl_seen = []
+    cam._picam2 = types.SimpleNamespace(set_controls=lambda c: cam._ctrl_seen.append(c))
+    return cam
+
+
+def _feed_lux(cam, lux, frames):
+    md = {} if lux is None else {"Lux": lux}
+    req = types.SimpleNamespace(get_metadata=lambda: md)
+    for _ in range(frames):
+        cam._update_day_lift(req)
+
+
+def test_day_lift_engages_only_after_the_streak_when_scene_is_dim():
+    # Low lux (dim) → the lift latches, but only after DAY_LIFT_STREAK
+    # consecutive confirming frames (debounce), turning on HighQuality denoise.
+    cam = _day_lift_manager()
+    _feed_lux(cam, 20.0, CameraManager.DAY_LIFT_STREAK - 1)
+    assert cam._day_lift_active is False          # not yet — streak not reached
+    assert cam._ctrl_seen == []
+    _feed_lux(cam, 20.0, 1)                        # the flipping frame
+    assert cam._day_lift_active is True
+    assert cam._ctrl_seen[-1] == {"NoiseReductionMode": CameraManager._NR_HIGH_QUALITY}
+
+
+def test_day_lift_releases_when_the_scene_brightens():
+    cam = _day_lift_manager()
+    cam._day_lift_active = True                    # start engaged
+    _feed_lux(cam, 150.0, CameraManager.DAY_LIFT_STREAK)  # lux jumps (bright)
+    assert cam._day_lift_active is False
+    assert cam._ctrl_seen[-1] == {"NoiseReductionMode": CameraManager._NR_FAST}
+
+
+def test_day_lift_hysteresis_band_does_not_flap():
+    # Mid-band lux (between enter 45 and exit 90) must hold the current state in
+    # BOTH directions — no oscillation at the threshold.
+    mid = 60.0  # 45 < 60 < 90
+    off = _day_lift_manager()
+    _feed_lux(off, mid, CameraManager.DAY_LIFT_STREAK * 2)
+    assert off._day_lift_active is False           # stays off
+    on = _day_lift_manager()
+    on._day_lift_active = True
+    _feed_lux(on, mid, CameraManager.DAY_LIFT_STREAK * 2)
+    assert on._day_lift_active is True             # stays on
+
+
+def test_day_lift_streak_resets_on_a_contrary_frame():
+    # A lone bright frame amid dim ones must not accumulate toward a flip.
+    cam = _day_lift_manager()
+    _feed_lux(cam, 20.0, CameraManager.DAY_LIFT_STREAK - 1)
+    _feed_lux(cam, 200.0, 1)                       # resets the streak
+    _feed_lux(cam, 20.0, CameraManager.DAY_LIFT_STREAK - 1)
+    assert cam._day_lift_active is False           # never reached the streak
+
+
+def test_day_lift_never_engages_in_night_mode():
+    cam = _day_lift_manager()
+    cam._ir_mode = True                            # night owns the frame
+    _feed_lux(cam, 20.0, CameraManager.DAY_LIFT_STREAK * 2)
+    assert cam._day_lift_active is False
+    assert cam._ctrl_seen == []
+
+
+def test_day_lift_inert_when_tuning_reports_no_lux():
+    cam = _day_lift_manager()                       # metadata has no "Lux" key
+    _feed_lux(cam, None, CameraManager.DAY_LIFT_STREAK * 2)
+    assert cam._day_lift_active is False
+    assert cam._ctrl_seen == []
+
+
+def test_night_resets_an_engaged_day_lift_on_both_transitions():
+    # The day-lift bows out under night (the callback prioritises the night
+    # LUT); _apply_night_camera resets it so it re-evaluates in colour (#52).
+    cam = CameraManager({"camera": {"day_gamma": 2.2, "ir_exposure": 2.0, "ir_min_fps": 30}})
+    cam._picam2 = types.SimpleNamespace(set_controls=lambda c: None)
+    cam._current_bitrate = cam._night_min_bitrate   # skip the re-clamp branch
+    cam._day_lift_active = True                      # lift engaged by day
+    cam._apply_night_camera(True)                    # night falls
+    assert cam._day_lift_active is False and cam._day_lift_streak == 0
+    cam._day_lift_active = True                       # (would have re-engaged)
+    cam._apply_night_camera(False)                    # day returns
+    assert cam._day_lift_active is False and cam._day_lift_streak == 0
+
+
+def test_night_exposure_path_unchanged_when_day_gamma_off():
+    # Feature off (day_gamma=1.0) → the original ir_exposure-only night path.
+    cam = CameraManager({"camera": {"ir_exposure": 2.0, "ir_min_fps": 30}})
+    seen = []
+    cam._picam2 = types.SimpleNamespace(set_controls=lambda c: seen.append(c))
+    cam._current_bitrate = cam._night_min_bitrate
+    cam._apply_night_camera(True)
+    assert seen[-1]["ExposureValue"] == 2.0
+    cam._apply_night_camera(False)
+    assert seen[-1]["ExposureValue"] == 0.0
+    # the night LUT is built at runtime from scene stats — never at construction
     assert CameraManager({"camera": {"ir_gamma": 2.2}})._ir_gamma_lut is None

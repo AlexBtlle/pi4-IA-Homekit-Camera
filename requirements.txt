@@ -1,5 +1,6 @@
+# DEVELOPMENT ONLY. Production installs never touch pip: install.sh gets
+# every Python dependency from apt (python3-yaml, python3-numpy,
+# python3-opencv, python3-picamera2) and the service runs on the system
+# python — no venv. This file exists for dev machines running pytest
+# (numpy/cv2/picamera2 are mocked by tests/conftest.py, PyYAML is real).
 PyYAML>=6.0
-# numpy, opencv (cv2) and picamera2 are installed via apt
-# (python3-numpy, python3-opencv, python3-picamera2) and accessed through
-# the venv's --system-site-packages. They are NOT installed via pip because
-# prebuilt wheels are unreliable across Raspberry Pi OS / Python versions.
