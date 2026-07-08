@@ -57,6 +57,24 @@ Starting from a blank card, use **[Raspberry Pi Imager](https://www.raspberrypi.
 
 ## Install
 
+**First, check the camera is detected.** The most common first-install snag is a camera `libcamera` can't see:
+
+```bash
+rpicam-hello --list-cameras
+```
+
+This should list your sensor (OV5647, IMX219, IMX708…). If it reports *no cameras available*:
+
+- Re-seat the ribbon cable — contacts the right way round, fully clicked in (on a Pi Zero, use the narrow Zero cable).
+- Make sure `/boot/firmware/config.txt` has `camera_auto_detect=1`.
+- If auto-detect still finds nothing, add the explicit overlay for your sensor and reboot:
+  ```bash
+  echo "dtoverlay=imx708" | sudo tee -a /boot/firmware/config.txt   # or ov5647 / imx219
+  sudo reboot
+  ```
+
+Once the camera shows up, install:
+
 ```bash
 git clone https://github.com/AlexBtlle/pi4-IA-Homekit-Camera.git
 cd pi4-IA-Homekit-Camera
