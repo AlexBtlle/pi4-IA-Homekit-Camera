@@ -5,7 +5,7 @@ venv/
 .venv/
 
 # Node / HomeKit app
-homekit/node_modules/
+node_modules/
 homekit/dist/
 homekit/persist/
 homekit/pairing.json
