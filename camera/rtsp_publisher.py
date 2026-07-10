@@ -74,6 +74,19 @@ class RtspPublisher:
                         "ffmpeg",
                         "-hide_banner", "-loglevel", "warning",
                         "-f", "h264",
+                        # Raw H264 from the pipe carries NO real timestamps,
+                        # only the encoder's *nominal* rate baked into the SPS
+                        # VUI (= configured fps, e.g. 30). But the sensor
+                        # delivers fewer frames when it slows down — night mode
+                        # relaxes FrameDurationLimits toward ir_min_fps (~10-12
+                        # fps in the dark). Tagged at the nominal 30, that
+                        # footage plays back ~2.5x fast: fine on the real-time
+                        # live view, but HKSV freezes the wrong timing into the
+                        # recorded clip. Stamp each frame by its real arrival
+                        # instant instead, so playback speed stays correct at
+                        # any capture rate. Field-measured: 10 real s → 3.97 s
+                        # file before this (#57 follow-up).
+                        "-use_wallclock_as_timestamps", "1",
                         "-i", f"pipe:{self._pipe_r_fd}",
                         "-c:v", "copy",
                         "-rtsp_transport", "tcp",

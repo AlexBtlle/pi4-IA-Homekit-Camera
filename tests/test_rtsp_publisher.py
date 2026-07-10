@@ -137,6 +137,28 @@ def test_ffmpeg_has_io_timeout(monkeypatch):
     assert 0 < timeout_us <= 8_000_000
 
 
+def test_ffmpeg_timestamps_frames_by_arrival(monkeypatch):
+    # Raw H264 has no real timestamps; the sensor's actual fps drops below the
+    # nominal (baked in the SPS) in the dark, so the stream must be stamped by
+    # wall-clock arrival or HKSV records it at the wrong speed (#57 follow-up).
+    # The flag is an INPUT option — it must sit before -i to apply to the pipe.
+    pub = make_publisher()
+    monkeypatch.setattr(pub, "_drain_pipe", lambda s: None)
+    captured = {}
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        pub._stop_event.set()
+        return FakeProc()
+
+    monkeypatch.setattr(rtsp_publisher.subprocess, "Popen", fake_popen)
+    pub._run()
+    args = captured["args"]
+    assert "-use_wallclock_as_timestamps" in args
+    assert args[args.index("-use_wallclock_as_timestamps") + 1] == "1"
+    assert args.index("-use_wallclock_as_timestamps") < args.index("-i")
+
+
 # ----------------------------------------------------------------------
 # Stall detector (hung ffmpeg: alive but not reading — field-tested via
 # a SIGSTOPped mediamtx, which -rw_timeout failed to catch)

@@ -13,10 +13,20 @@ export class MotionService {
   private server?: http.Server;
   private resetTimer?: NodeJS.Timeout;
   private _lastTrigger?: Date;
+  private _lastTriggerMonotonic?: number;
   private _triggerCount = 0;
 
   getStats(): { lastTrigger?: Date; triggerCount: number } {
     return { lastTrigger: this._lastTrigger, triggerCount: this._triggerCount };
+  }
+
+  /** ms since the last webhook-to-sensor trigger, or undefined if none yet.
+   *  performance.now()-based (not Date) so it survives an NTP step (#36's
+   *  reasoning, reused here to correlate against the HKSV pre-roll window). */
+  msSinceLastTrigger(): number | undefined {
+    return this._lastTriggerMonotonic === undefined
+      ? undefined
+      : performance.now() - this._lastTriggerMonotonic;
   }
 
   constructor(
@@ -68,6 +78,7 @@ export class MotionService {
 
     sensor.updateCharacteristic(Characteristic.MotionDetected, true);
     this._lastTrigger = new Date();
+    this._lastTriggerMonotonic = performance.now();
     this._triggerCount++;
     console.log("[motion] motion detected → sensor active");
 

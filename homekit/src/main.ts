@@ -202,6 +202,7 @@ function main(): void {
     config.motionPort,
     config.motionTimeout,
   );
+  recordingDelegate.motionAgeProvider = () => motion.msSinceLastTrigger();
 
   accessory.publish({
     username: pairing.username,

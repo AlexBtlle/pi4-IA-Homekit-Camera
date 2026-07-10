@@ -198,51 +198,76 @@ export class Prebuffer {
     this.ff = ff;
     this.lastActivity = performance.now(); // spawn counts as activity
 
-    ff.stdout.on("data", (chunk: Buffer) => {
-      this.lastActivity = performance.now();
-      let boxes;
-      try {
-        boxes = this.parser.push(chunk);
-      } catch (e) {
-        // Corrupt/EOF-sized box: the stream can't be re-synced — recycle
-        // ffmpeg ('close' resets the parse state and respawns with backoff).
-        console.error(`[prebuffer] ${(e as Error).message} — recycling ffmpeg`);
-        ff.kill("SIGKILL");
-        return;
-      }
-      for (const box of boxes) {
-        this.onBox(box.type, box.data);
-      }
-    });
+    ff.stdout.on("data", (chunk: Buffer) => this.onFfData(ff, chunk));
     ff.stderr.on("data", (d: Buffer) =>
       console.error(`[prebuffer] ${d.toString().trim()}`),
     );
     ff.on("error", (e) => console.error("[prebuffer] ffmpeg error:", e.message));
-    ff.on("close", (code) => {
-      if (this.ff === ff) {
-        this.ff = undefined;
-      }
-      if (this.running) {
-        console.error(
-          `[prebuffer] ffmpeg exited (${code}), restarting in ${this.restartDelay}ms`,
-        );
-        this.resetParseState();
-        this.restartTimer = setTimeout(() => this.spawn(), this.restartDelay);
-        this.restartDelay = Math.min(this.restartDelay * 2, 15000);
-      }
-    });
+    ff.on("close", (code) => this.onFfClose(ff, code));
 
     // ffmpeg started cleanly enough to reset the backoff once data flows.
     ff.stdout.once("data", () => {
-      this.restartDelay = 1000;
+      if (this.ff === ff) {
+        this.restartDelay = 1000;
+      }
     });
+  }
+
+  private onFfData(ff: ChildProcess, chunk: Buffer): void {
+    if (this.ff !== ff) {
+      // Late output from a superseded process: after stop()→start() (HomeKit
+      // disarm/re-arm) the old SIGKILLed ffmpeg can still flush buffered
+      // stdout. Feeding it to the parser would interleave two processes'
+      // boxes into one stream — corrupt fragments in the new instance.
+      return;
+    }
+    this.lastActivity = performance.now();
+    let boxes;
+    try {
+      boxes = this.parser.push(chunk);
+    } catch (e) {
+      // Corrupt/EOF-sized box: the stream can't be re-synced — recycle
+      // ffmpeg ('close' resets the parse state and respawns with backoff).
+      console.error(`[prebuffer] ${(e as Error).message} — recycling ffmpeg`);
+      ff.kill("SIGKILL");
+      return;
+    }
+    for (const box of boxes) {
+      this.onBox(box.type, box.data);
+    }
+  }
+
+  private onFfClose(ff: ChildProcess, code: number | null): void {
+    if (this.ff !== ff) {
+      // Superseded: stop() already cleaned up, or a newer spawn owns the
+      // parse state. The old guard only checked `running`, so a quick
+      // disarm→re-arm let the dead process's close handler reset the LIVE
+      // instance's parser and schedule a second spawn — two ffmpeg feeding
+      // one parser.
+      return;
+    }
+    this.ff = undefined;
+    if (this.running) {
+      console.error(
+        `[prebuffer] ffmpeg exited (${code}), restarting in ${this.restartDelay}ms`,
+      );
+      this.resetParseState();
+      this.restartTimer = setTimeout(() => this.spawn(), this.restartDelay);
+      this.restartDelay = Math.min(this.restartDelay * 2, 15000);
+    }
   }
 
   private resetParseState(): void {
     this.parser = new Mp4BoxParser();
     this.pendingInit = [];
     this.pendingMoof = undefined;
-    // Keep initSegment: it stays valid across reconnects (same encoder params).
+    // Drop the cached init segment too. It was kept across reconnects ("same
+    // encoder params") — but if the camera service came back with different
+    // ones (resolution change), the stale moov (old SPS/PPS) would be served
+    // to every new recording until this service restarts: unreadable clips.
+    // Cost of dropping: ~none — empty_moov makes ffmpeg emit ftyp+moov right
+    // at reconnection, so getInit() waits a moment instead of lying.
+    this.initSegment = undefined;
   }
 
   // --------------------------------------------------------------------
@@ -288,11 +313,29 @@ export class Prebuffer {
     if (this.initSegment) {
       return Promise.resolve(this.initSegment);
     }
+    if (signal.aborted) {
+      // An abort event that fired before this listener was registered never
+      // re-fires ({once:true} only catches FUTURE aborts) — without this
+      // check, a signal that was already aborted (e.g. closeRecordingStream
+      // racing handleRecordingStreamRequest) hung this promise forever,
+      // leaking the streams Map entry and its AbortController.
+      return Promise.reject(new Error("aborted"));
+    }
     return new Promise<Buffer>((resolve, reject) => {
-      this.initWaiters.push(resolve);
-      signal.addEventListener("abort", () => reject(new Error("aborted")), {
-        once: true,
-      });
+      // Clean up both ways: an aborted waiter must leave the array (it used
+      // to linger until the next moov arrived — forever if the camera was
+      // down), and a resolved waiter must release its abort listener (the
+      // recording's signal lives for the whole clip).
+      const onAbort = () => {
+        this.initWaiters = this.initWaiters.filter((w) => w !== waiter);
+        reject(new Error("aborted"));
+      };
+      const waiter = (b: Buffer) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(b);
+      };
+      this.initWaiters.push(waiter);
+      signal.addEventListener("abort", onAbort, { once: true });
     });
   }
 
@@ -335,9 +378,21 @@ export class Prebuffer {
 
     try {
       // Prebuffer: fragments already captured before the trigger.
-      const cutoff = performance.now() - prebufferMs;
+      const now = performance.now();
+      const preroll = this.rolling.filter((f) => f.time >= now - prebufferMs);
+      // One line per recording session: how much pre-roll actually left the
+      // Pi. Splits the "clip starts AT the motion" symptom in half — if this
+      // says ~4 fragments and the clip still has no pre-roll, the trimming
+      // happens on the hub; if it says 0-1, the ring is the problem.
+      console.log(
+        `[prebuffer] session start: serving ${preroll.length} pre-roll fragment(s)` +
+          (preroll.length
+            ? ` (oldest ${((now - preroll[0].time) / 1000).toFixed(1)}s old)`
+            : "") +
+          ` — ring holds ${this.rolling.length}`,
+      );
       let lastId = 0;
-      for (const f of this.rolling.filter((f) => f.time >= cutoff)) {
+      for (const f of preroll) {
         lastId = f.id;
         yield f.data;
       }
