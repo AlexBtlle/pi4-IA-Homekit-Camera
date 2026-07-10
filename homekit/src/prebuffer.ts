@@ -370,9 +370,21 @@ export class Prebuffer {
 
     try {
       // Prebuffer: fragments already captured before the trigger.
-      const cutoff = performance.now() - prebufferMs;
+      const now = performance.now();
+      const preroll = this.rolling.filter((f) => f.time >= now - prebufferMs);
+      // One line per recording session: how much pre-roll actually left the
+      // Pi. Splits the "clip starts AT the motion" symptom in half — if this
+      // says ~4 fragments and the clip still has no pre-roll, the trimming
+      // happens on the hub; if it says 0-1, the ring is the problem.
+      console.log(
+        `[prebuffer] session start: serving ${preroll.length} pre-roll fragment(s)` +
+          (preroll.length
+            ? ` (oldest ${((now - preroll[0].time) / 1000).toFixed(1)}s old)`
+            : "") +
+          ` — ring holds ${this.rolling.length}`,
+      );
       let lastId = 0;
-      for (const f of this.rolling.filter((f) => f.time >= cutoff)) {
+      for (const f of preroll) {
         lastId = f.id;
         yield f.data;
       }
