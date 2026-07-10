@@ -42,10 +42,16 @@ export class RecordingDelegate implements CameraRecordingDelegate {
   updateRecordingActive(active: boolean): void {
     this._active = active;
     if (active) {
-      this.prebuffer.start();
-    } else {
-      this.prebuffer.stop();
+      this.prebuffer.start(); // idempotent — belt and braces
     }
+    // Deliberately NOT stopping on disarm. Field log (#57): the home hub arms
+    // recording LAZILY — "recording armed" lands at the exact second the
+    // motion stream opens, "disarmed" a minute later when the clip ends.
+    // Gating the prebuffer on Active therefore spawned its ffmpeg AT the
+    // motion: the pre-motion seconds were never captured and every clip
+    // started at the trigger ("serving 0 pre-roll — ring holds 0"). The
+    // prebuffer's lifetime is tied to the recording CONFIGURATION below —
+    // set while recording is enabled in the Home app, cleared when disabled.
     console.log(`[hksv] recording ${active ? "armed" : "disarmed"}`);
   }
 
@@ -53,6 +59,19 @@ export class RecordingDelegate implements CameraRecordingDelegate {
     configuration: CameraRecordingConfiguration | undefined,
   ): void {
     this.configuration = configuration;
+    // Pre-roll only exists if the prebuffer was already running BEFORE the
+    // motion, so run it whenever recording is enabled in the Home app:
+    // HAP-NodeJS delivers the selected configuration here on change AND
+    // replays the persisted one at boot; it delivers `undefined` when the
+    // user disables recording (RecordingManagement.js: deserialize replays
+    // updateRecordingConfiguration; disable calls it with undefined).
+    if (configuration) {
+      this.prebuffer.start();
+      console.log("[hksv] recording configured — prebuffer running");
+    } else {
+      this.prebuffer.stop();
+      console.log("[hksv] recording configuration removed — prebuffer stopped");
+    }
   }
 
   async *handleRecordingStreamRequest(
