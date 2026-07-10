@@ -313,6 +313,14 @@ export class Prebuffer {
     if (this.initSegment) {
       return Promise.resolve(this.initSegment);
     }
+    if (signal.aborted) {
+      // An abort event that fired before this listener was registered never
+      // re-fires ({once:true} only catches FUTURE aborts) — without this
+      // check, a signal that was already aborted (e.g. closeRecordingStream
+      // racing handleRecordingStreamRequest) hung this promise forever,
+      // leaking the streams Map entry and its AbortController.
+      return Promise.reject(new Error("aborted"));
+    }
     return new Promise<Buffer>((resolve, reject) => {
       // Clean up both ways: an aborted waiter must leave the array (it used
       // to linger until the next moov arrived — forever if the camera was

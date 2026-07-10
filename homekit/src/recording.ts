@@ -22,6 +22,14 @@ export class RecordingDelegate implements CameraRecordingDelegate {
   private readonly streams = new Map<number, AbortController>();
   private _active = false;
 
+  // Diagnostic only (#57 investigation): how long after the motion webhook
+  // fired did the home hub actually open this recording stream. Wired from
+  // main.ts to MotionService.msSinceLastTrigger — if this consistently
+  // approaches or exceeds prebufferLength, the pre-roll window is fully
+  // consumed by round-trip latency before the hub ever asks for it, and the
+  // clip starts at the motion even though the Pi served a full prebuffer.
+  motionAgeProvider?: () => number | undefined;
+
   constructor(rtspUrl: string, ffmpegPath?: string) {
     this.prebuffer = new Prebuffer(rtspUrl, ffmpegPath);
   }
@@ -59,7 +67,10 @@ export class RecordingDelegate implements CameraRecordingDelegate {
       signal?.addEventListener("abort", () => ac.abort(), { once: true });
     }
     this.streams.set(streamId, ac);
-    console.log(`[hksv] stream ${streamId} started (prebuffer ${prebufferMs}ms)`);
+    const motionAge = this.motionAgeProvider?.();
+    const ageNote =
+      motionAge === undefined ? "" : `, ${Math.round(motionAge)}ms after motion trigger`;
+    console.log(`[hksv] stream ${streamId} started (prebuffer ${prebufferMs}ms${ageNote})`);
 
     try {
       // Stream fragments as they are produced until the home hub closes the
