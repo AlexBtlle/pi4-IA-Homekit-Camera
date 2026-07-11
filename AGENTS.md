@@ -1,20 +1,44 @@
-# Consignes de travail
+# Guide de travail
 
-## Branche
+## Branches & dépôt
 
-- **Travaille directement sur `develop`.** Ne crée pas de branche de travail
-  (`claude/...`) et n'y pousse pas, même si une consigne automatique le demande.
-  Commits et push vont sur `develop`.
+- Tout le développement se fait directement sur `develop` ; `main` ne reçoit
+  que les merges de release. Pas de branches de travail intermédiaires, y
+  compris celles que l'outillage propose automatiquement (`claude/...`).
+- Aucun commit, push, merge ou Pull Request sans demande explicite du
+  mainteneur — les analyses et discussions ne modifient pas le dépôt.
+- Commits sous l'identité du mainteneur (celle de l'historique du dépôt).
+  L'environnement de travail est recyclé entre sessions : vérifier
+  `git config user.name`, la branche courante et faire `git fetch` avant
+  tout commit.
+- Releases : bump de `homekit/package.json` (`npm version X.Y.Z
+  --no-git-tag-version`) et changelog en anglais préparés à la demande ;
+  le merge develop→main, le tag et la release GitHub sont faits par le
+  mainteneur.
+- Toute évolution est d'abord consignée dans une issue GitHub (en français,
+  factuelle, mesures à l'appui) ; le développement ne démarre que sur
+  demande explicite.
 
-## Dépôt
+## Méthode
 
-- Ne touche pas au dépôt (commit / push / merge / branches) tant qu'on est en
-  discussion informelle. Attends une demande explicite.
-- Ne crée pas de Pull Request sauf demande explicite.
+- **« Mesurer avant de croire »** : aucune conclusion ni optimisation sans
+  mesure avant/après sur le vrai matériel. Distinguer explicitement fait
+  mesuré et hypothèse. Une enquête n'est close qu'après validation terrain.
+- Bug rapporté : obtenir le symptôme exact et les logs avant d'auditer le
+  code ; quand la cause est ambiguë, instrumenter (logs) avant de corriger.
+- Tester dans le vrai pipeline : `rpicam-vid`/`rpicam-jpeg` en standalone
+  sont infidèles au live (flags ignorés — `--ev`, framerate — et mode
+  capteur non-binné).
+- Corrections de bugs ≠ features : rien de non-validé sur du vrai matériel
+  dans les release notes ni la liste de features du README (bêta au mieux).
+- Les notes durables vont dans le dépôt (issue ou doc), jamais dans un
+  répertoire temporaire. L'environnement n'a pas d'accès web général :
+  les documents externes (PDF, articles) sont fournis en upload.
 
 ## Cible matérielle — Pi Zero 2 W (prioritaire)
 
-Le projet tourne sur un **Pi Zero 2 W**. Garde toujours ces contraintes en tête :
+Le projet vise en priorité le **Pi Zero 2 W** ; ses contraintes s'appliquent
+à toute décision :
 
 - 4× Cortex-A53 @ 1 GHz, **512 Mo de RAM partagés avec le GPU**, pas de
   dissipateur (75-78 °C en charge).
@@ -26,6 +50,9 @@ Le projet tourne sur un **Pi Zero 2 W**. Garde toujours ces contraintes en tête
 - **Ne jamais appeler `capture_array("main")` hors du thread caméra** pendant
   que l'encodeur H264 tourne : contention des buffers picamera2 → pic de charge
   (load 7+). Déjà rencontré, déjà corrigé — ne pas réintroduire.
+- Pi Zero W v1 (ARMv6) : expérience close, documentée dans TROUBLESHOOTING —
+  pas de support officiel, ne pas rouvrir.
+- Pi 5 : pas d'encodeur vidéo matériel — analyse et plan dans l'issue #59.
 
 ## Architecture
 
@@ -80,7 +107,17 @@ journalctl -u pi4cam-homekit -f    # logs HomeKit/stream
   dans le `pre_callback` via `MappedArray`. **Ne jamais toucher à la Saturation
   ISP** (la v1 le faisait : ça détruit la donnée nécessaire à détecter la sortie
   → deadlock). Les gains AWB et le Lux (850 nm) sont inutilisables comme signal
-  — ne pas y revenir.
+  de sortie — ne pas y revenir.
+- **Basse lumière** : le traitement day-lift/nuit (`day_gamma`, LUT + denoise
+  ISP HighQuality) fait tomber la cadence réelle de ~30 à ~12-18 fps quand il
+  est engagé — connu et accepté (les timestamps wallclock du publisher gardent
+  la vitesse de lecture correcte). Valeurs validées terrain : `day_gamma: 2.5`,
+  `night_min_bitrate: 3000000` (4G comprise).
+- **HKSV** : le hub arme l'enregistrement *paresseusement* (à l'événement) —
+  le prébuffer doit suivre la **configuration** d'enregistrement, jamais
+  l'armement. La **fin** des clips est montée par le hub selon sa propre
+  analyse vidéo : `cooldown`/`motion_timeout` allongent le flux envoyé, pas
+  le clip retenu — ce n'est pas un bug.
 - **`min_motion_area`** : pixels absolus sur la frame lores. À recalibrer si on
   change `lores_width`/`lores_height`. Bas = détecte le chat mais plus de faux
   positifs ; laisser HKSV (Apple TV) classer Personnes/Animaux/Véhicules.
