@@ -1,6 +1,6 @@
 {
   "name": "pi4cam-homekit",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "private": true,
   "description": "Standalone HAP-NodeJS HomeKit camera (live stream + motion + HKSV) for pi4-IA-Homekit-Camera",
   "license": "GPL-3.0-only",
