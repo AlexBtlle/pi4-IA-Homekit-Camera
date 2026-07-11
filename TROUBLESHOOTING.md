@@ -227,6 +227,29 @@ journalctl -u pi4cam -f | grep -i motion
 
 ---
 
+## HKSV clips: where they start and end
+
+Who controls what, in a recorded clip's timeline:
+
+- **The clip starts before the motion** thanks to the continuous prebuffer
+  (~4 s ring, running whenever recording is enabled in the Home app). If your
+  clips start *at* the motion instead, check that the prebuffer is alive at
+  idle: `pgrep -af ffmpeg` should show a second ffmpeg (the `anullsrc` one)
+  even with no motion, and `journalctl -u pi4cam-homekit` should log
+  `serving N pre-roll fragment(s)` at each recording.
+- **The clip's END is edited by the Apple home hub, not by the camera.** The
+  hub runs its own video analysis (the same engine that classifies People /
+  Animals / Vehicles) and trims the saved clip to the activity *it* sees.
+  `detection.cooldown` and `homekit.motion_timeout` extend how long the
+  *stream* stays open after the last motion (field-measured: 30 + 10 s of
+  quiet tail is really sent) — but the hub cuts the boring tail when it
+  assembles the iCloud clip, and no HomeKit parameter lets an accessory
+  override that. Commercial HKSV cameras behave the same way. If a clip seems
+  to stop abruptly at the end of the motion: that's the hub's editing, not a
+  camera bug.
+
+---
+
 ## IR night vision (beta)
 
 `ir_grayscale` is a **beta** feature, **off by default**. When enabled, the
