@@ -187,6 +187,12 @@ class CameraManager:
 
         self._picam2 = None
         self._encoder = None
+        # True on VC4/VideoCore platforms (Pi 0-4): the H264 encoder is the
+        # hardware V4L2 device and live bitrate/keyframe controls go through
+        # ioctls on its fd. On PISP platforms (Pi 5) picamera2 substitutes a
+        # software libav/x264 encoder with no V4L2 fd — detected in start().
+        self._hw_encoder = True
+        self._sw_bitrate_noted = False
 
         self._pipe_r: int = -1
         self._pipe_w: int = -1
@@ -288,14 +294,32 @@ class CameraManager:
             fcntl.fcntl(self._pipe_w, getattr(fcntl, "F_SETPIPE_SZ", 1031), 1 << 20)
         except OSError:
             logger.debug("Could not enlarge the H264 pipe", exc_info=True)
+        # On non-VC4 platforms (Pi 5 / PISP) picamera2 aliases H264Encoder to
+        # LibavH264Encoder — software x264, same kwargs. Its config is safe for
+        # our passthrough chain (verified in picamera2 0.3.36 source):
+        # tune=zerolatency (no B-frames, so wallclock stamping and -c:v copy
+        # see display-order frames), gop_size=iperiod, SPS/PPS repeated.
+        # profile="high" selects the "superfast" preset — the whitepaper's
+        # high-quality point (~100-150 % of one A76 core at 1080p30, RP-010033).
+        try:
+            from picamera2.platform import Platform, get_platform
+            self._hw_encoder = get_platform() == Platform.VC4
+        except Exception:
+            # Platform probe unavailable (old picamera2): those installs are
+            # VC4-only in practice — keep the historic ioctl behaviour.
+            self._hw_encoder = True
+
         # iperiod = fps → a keyframe every 1 s. Live view (-c:v copy) can only
         # render once it receives a keyframe, so the shortest practical GOP cuts
         # the time-to-first-frame. HKSV still works: the prebuffer fragments on
         # each keyframe (movflags frag_keyframe), yielding 1 s fMP4 fragments —
         # RETAIN_MS=6000 keeps 6 of them, the declared 4 s fragmentLength is a hint.
         # Cost: ~10-15 % more bitrate (more keyframes) — negligible at 4 Mbps.
+        # framerate: nominal rate only (SPS on VC4, stream rate on libav) — the
+        # publisher stamps frames by wallclock arrival regardless.
         self._encoder = H264Encoder(
-            bitrate=self._bitrate, iperiod=self._fps, profile="high"
+            bitrate=self._bitrate, iperiod=self._fps, profile="high",
+            framerate=self._fps,
         )
 
         self._last_frame_time = time.monotonic()
@@ -313,9 +337,11 @@ class CameraManager:
         self._watchdog_thread.start()
 
         logger.info(
-            "Picamera2 started: %dx%d @ %d fps | lores %dx%d | bitrate %d | snapshot every %.0fs",
+            "Picamera2 started: %dx%d @ %d fps | lores %dx%d | bitrate %d | "
+            "encoder %s | snapshot every %.0fs",
             self._width, self._height, self._fps,
             self._lores_w, self._lores_h, self._bitrate,
+            "hardware (V4L2)" if self._hw_encoder else "software (libav/x264)",
             self._snapshot_interval,
         )
 
@@ -342,6 +368,17 @@ class CameraManager:
         bps = self._clamp_bitrate(bps)
         if self._encoder is None:
             return self._current_bitrate
+        if not self._hw_encoder:
+            # Pi 5: the software encoder has no V4L2 fd to poke. Accepted v1
+            # trade-off (#59), same as the USB backend — the governor keeps
+            # asking, the encoder keeps its configured bitrate.
+            if not self._sw_bitrate_noted:
+                logger.info(
+                    "Dynamic bitrate is not supported by the software encoder "
+                    "(Pi 5) — keeping %.1f Mbps", self._current_bitrate / 1e6,
+                )
+                self._sw_bitrate_noted = True
+            return self._current_bitrate
         if bps != self._current_bitrate:
             try:
                 self._apply_bitrate(bps)
@@ -362,6 +399,15 @@ class CameraManager:
         """
         if self._encoder is None:
             return False
+        if not self._hw_encoder:
+            # Pi 5: LibavH264Encoder has a native API for this — no ioctl.
+            try:
+                self._encoder.force_key_frame()
+                logger.info("Keyframe forced (live session start)")
+                return True
+            except Exception:
+                logger.warning("force_key_frame() failed", exc_info=True)
+                return False
         try:
             self._apply_force_keyframe()
             logger.info("Keyframe forced (live session start)")

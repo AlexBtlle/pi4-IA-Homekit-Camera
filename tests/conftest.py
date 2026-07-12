@@ -8,6 +8,7 @@ for _mod in (
     "picamera2",
     "picamera2.encoders",
     "picamera2.outputs",
+    "picamera2.platform",
     "libcamera",
 ):
     sys.modules.setdefault(_mod, MagicMock())
