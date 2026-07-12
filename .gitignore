@@ -9,6 +9,8 @@ node_modules/
 homekit/dist/
 homekit/persist/
 homekit/pairing.json
+# Throwaway tvOS 27 protocol probe state (#59) — own pairing identity
+probe-persist/
 
 # Local pairing/runtime state
 *.log
