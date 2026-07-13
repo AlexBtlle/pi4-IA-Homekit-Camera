@@ -52,7 +52,8 @@ def main() -> None:
     config = load_config()
 
     rtsp_cfg = config.get("rtsp", {})
-    rtsp_url = f"rtsp://localhost:{rtsp_cfg.get('port', 8554)}/camera"
+    rtsp_base = f"rtsp://localhost:{rtsp_cfg.get('port', 8554)}"
+    rtsp_url = f"{rtsp_base}/camera"
 
     # Camera backend (#19): csi = picamera2 (default, unchanged) | usb = UVC
     # webcam via ffmpeg [BETA]. Both expose the same surface, so everything
@@ -70,7 +71,15 @@ def main() -> None:
         camera = CameraManager.get_instance(config)
     camera.start()
 
-    publisher = RtspPublisher(camera.get_h264_read_fd(), rtsp_url)
+    # HEVC multi-tier mode (#59 Volet 2, Pi 5 opt-in): the pipe carries raw
+    # YUV and one ffmpeg produces the x265 ladder + the legacy x264 /camera
+    # stream. Classic mode publishes the encoder's H264 pipe unchanged.
+    hevc_info = getattr(camera, "hevc_stream_info", lambda: None)()
+    if hevc_info:
+        from .hevc_publisher import HevcPublisher
+        publisher = HevcPublisher(camera.get_stream_read_fd(), rtsp_base, hevc_info)
+    else:
+        publisher = RtspPublisher(camera.get_h264_read_fd(), rtsp_url)
     publisher.start()
 
     detector = PresenceDetector(camera, config)

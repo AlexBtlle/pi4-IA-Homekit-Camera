@@ -70,6 +70,10 @@ def parse_args():
                    help="x265 preset for all tiers (default ultrafast)")
     p.add_argument("--with-detection", action="store_true",
                    help="also run the production MOG2 motion-detection load")
+    p.add_argument("--no-legacy-h264", action="store_true",
+                   help="drop the 4th output leg (x264 1080p). The real "
+                        "deployment keeps rtsp://…/camera alive with it, so "
+                        "the DEFAULT (4 encodes) is the faithful load")
     p.add_argument("--analysis-fps", type=float, default=10.0,
                    help="detection analysis rate (default 10, like production)")
     p.add_argument("--report", default=REPORT_DEFAULT,
@@ -155,14 +159,18 @@ def x265_output(name, fps, avg_kbps, max_kbps, preset, pad):
     ]
 
 
-def build_ffmpeg_cmd(width, height, fps, preset):
+def build_ffmpeg_cmd(width, height, fps, preset, legacy_h264=True):
     (m_name, m_w, m_h, m_fps, m_avg, m_max) = TIERS[0]
     (l_name, l_w, l_h, l_fps, l_avg, l_max) = TIERS[1]
+    n = 4 if legacy_h264 else 3
+    pads = "[hi][mid][lo]" + ("[leg]" if legacy_h264 else "")
     fc = (
-        f"[0:v]split=3[hi][mid][lo];"
+        f"[0:v]split={n}{pads};"
         f"[mid]scale={m_w}:{m_h}[mid2];"
         f"[lo]scale={l_w}:{l_h},fps={l_fps}[lo2]"
     )
+    if legacy_h264:
+        fc += ";[leg]scale=1920:1080[leg2]"
     cmd = [
         "ffmpeg", "-hide_banner", "-nostats", "-y",
         "-f", "rawvideo", "-pix_fmt", "yuv420p",
@@ -172,6 +180,14 @@ def build_ffmpeg_cmd(width, height, fps, preset):
     cmd += x265_output("high", fps, 2800, 3000, preset, "hi")
     cmd += x265_output(m_name, m_fps, m_avg, m_max, preset, "mid2")
     cmd += x265_output(l_name, l_fps, l_avg, l_max, preset, "lo2")
+    if legacy_h264:
+        # The deployment's 4th leg (hevc_publisher.py): the legacy H.264
+        # stream that keeps the existing HomeKit path alive on the Pi 5.
+        cmd += [
+            "-map", "[leg2]", "-c:v", "libx264", "-preset", "superfast",
+            "-tune", "zerolatency", "-profile:v", "high", "-b:v", "4000k",
+            "-g", str(fps), "-sc_threshold", "0", "-f", "null", "-",
+        ]
     return cmd
 
 
@@ -251,7 +267,8 @@ def main():
 
     detection = DetectionLoad(args.analysis_fps) if args.with_detection else None
 
-    cmd = build_ffmpeg_cmd(width, height, args.fps, args.preset)
+    cmd = build_ffmpeg_cmd(width, height, args.fps, args.preset,
+                           legacy_h264=not args.no_legacy_h264)
     ff = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=False)
 
@@ -271,7 +288,8 @@ def main():
         detection.start()
 
     print(f"# bench: {width}x{height}@{args.fps} High + 1080p30 Medium + "
-          f"360p15 Low | preset {args.preset} | {args.duration}s"
+          f"360p15 Low{'' if args.no_legacy_h264 else ' + x264 1080p legacy'}"
+          f" | preset {args.preset} | {args.duration}s"
           f"{' | +detection' if detection else ''}")
     print(f"# sensor mode: {sensor_size} | main stride {stride}")
 
@@ -355,8 +373,9 @@ def write_report(args, width, height, sensor_size, stride, ffmpeg_version,
         "## Bench x265 3 paliers — Pi 5",
         "",
         f"- Config : High **{width}x{height}@{args.fps}** (2800/3000k) + "
-        f"Medium 1920x1080@30 (1700/1800k) + Low 640x360@15 (180/190k), "
-        f"preset `{args.preset}`, tune `zerolatency`, GOP 1 s",
+        f"Medium 1920x1080@30 (1700/1800k) + Low 640x360@15 (180/190k)"
+        + ("" if args.no_legacy_h264 else " + x264 1080p legacy (4000k)")
+        + f", preset `{args.preset}`, tune `zerolatency`, GOP 1 s",
         f"- Mode capteur : {sensor_size}, main stride {stride}"
         + (" (repack par frame)" if stride != width else ""),
         f"- Détection MOG2 simultanée : "

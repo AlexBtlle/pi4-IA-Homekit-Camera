@@ -64,41 +64,47 @@ class RtspPublisher:
         if self._proc is not None:
             self._proc.terminate()
 
+    def _ffmpeg_args(self) -> list[str]:
+        """The ffmpeg command line — overridden by pipe-fed subclasses
+        (HevcPublisher) that share the whole lifecycle below but encode
+        instead of copying."""
+        return [
+            "ffmpeg",
+            "-hide_banner", "-loglevel", "warning",
+            "-f", "h264",
+            # Raw H264 from the pipe carries NO real timestamps,
+            # only the encoder's *nominal* rate baked into the SPS
+            # VUI (= configured fps, e.g. 30). But the sensor
+            # delivers fewer frames when it slows down — night mode
+            # relaxes FrameDurationLimits toward ir_min_fps (~10-12
+            # fps in the dark). Tagged at the nominal 30, that
+            # footage plays back ~2.5x fast: fine on the real-time
+            # live view, but HKSV freezes the wrong timing into the
+            # recorded clip. Stamp each frame by its real arrival
+            # instant instead, so playback speed stays correct at
+            # any capture rate. Field-measured: 10 real s → 3.97 s
+            # file before this (#57 follow-up).
+            "-use_wallclock_as_timestamps", "1",
+            "-i", f"pipe:{self._pipe_r_fd}",
+            "-c:v", "copy",
+            "-rtsp_transport", "tcp",
+            # Best effort (µs): field testing showed the rtsp
+            # output IGNORES this on Pi OS's ffmpeg — the FIONREAD
+            # stall detector (_wait_or_kill_stalled) is the real
+            # guarantee — but it is harmless and may help on
+            # other builds.
+            "-rw_timeout", "5000000",
+            "-f", "rtsp",
+            self._rtsp_url,
+        ]
+
     def _run(self) -> None:
         delay = 1
         while not self._stop_event.is_set():
             started = time.monotonic()
             try:
                 self._proc = subprocess.Popen(
-                    [
-                        "ffmpeg",
-                        "-hide_banner", "-loglevel", "warning",
-                        "-f", "h264",
-                        # Raw H264 from the pipe carries NO real timestamps,
-                        # only the encoder's *nominal* rate baked into the SPS
-                        # VUI (= configured fps, e.g. 30). But the sensor
-                        # delivers fewer frames when it slows down — night mode
-                        # relaxes FrameDurationLimits toward ir_min_fps (~10-12
-                        # fps in the dark). Tagged at the nominal 30, that
-                        # footage plays back ~2.5x fast: fine on the real-time
-                        # live view, but HKSV freezes the wrong timing into the
-                        # recorded clip. Stamp each frame by its real arrival
-                        # instant instead, so playback speed stays correct at
-                        # any capture rate. Field-measured: 10 real s → 3.97 s
-                        # file before this (#57 follow-up).
-                        "-use_wallclock_as_timestamps", "1",
-                        "-i", f"pipe:{self._pipe_r_fd}",
-                        "-c:v", "copy",
-                        "-rtsp_transport", "tcp",
-                        # Best effort (µs): field testing showed the rtsp
-                        # output IGNORES this on Pi OS's ffmpeg — the FIONREAD
-                        # stall detector (_wait_or_kill_stalled) is the real
-                        # guarantee — but it is harmless and may help on
-                        # other builds.
-                        "-rw_timeout", "5000000",
-                        "-f", "rtsp",
-                        self._rtsp_url,
-                    ],
+                    self._ffmpeg_args(),
                     pass_fds=(self._pipe_r_fd,),
                 )
             except FileNotFoundError:

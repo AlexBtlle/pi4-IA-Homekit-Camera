@@ -48,6 +48,37 @@ camera:
                           # (remote/4G ≈ 2 Mbps) and it returns here when they leave (#47).
   control_port: 8990      # localhost-only endpoint (HomeKit app → camera) driving the
                           # dynamic bitrate — never exposed on the network
+
+  # ── HEVC multi-tier mode [EXPERIMENTAL #59 — Pi 5 ONLY] ────────────────────
+  # The new HKSV spec's 2K ladder: main is captured RAW at the High tier's
+  # size and ONE ffmpeg produces 3× H.265 (libx265) tiers plus the legacy
+  # H.264 stream (camera.width/height above), which keeps the existing
+  # HomeKit path working unchanged. Needs the SYSTEM ffmpeg (apt) with
+  # libx265 — not the project's static build. 4 simultaneous software
+  # encodes: strictly a Pi 5 feature, never enable on a Pi 0-4.
+  hevc:
+    enabled: false
+    preset: ultrafast     # x265 preset for all tiers — to revisit with the
+                          # scripts/bench_x265_pi5.py numbers on real hardware
+    high:                 # spec "2K Camera" High tier (bitrates in bit/s);
+      width: 2560         # 2304x1296 = IMX708 native binned alternative
+      height: 1440        # (the spec allows approximate resolutions)
+      fps: 30
+      bitrate: 2800000
+      max_bitrate: 3000000
+    medium:
+      width: 1920
+      height: 1080
+      fps: 30
+      bitrate: 1700000
+      max_bitrate: 1800000
+    low:
+      width: 640
+      height: 360
+      fps: 15
+      bitrate: 180000
+      max_bitrate: 190000
+
   day_min_bitrate: 500000   # bit/s — floor the live governor may request in daylight.
                           # 500k is the encoder's practical minimum; a clean day frame
                           # stays sharp there. Raising it costs bandwidth/HKSV storage

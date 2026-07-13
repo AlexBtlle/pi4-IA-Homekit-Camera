@@ -193,6 +193,23 @@ class CameraManager:
         # software libav/x264 encoder with no V4L2 fd — detected in start().
         self._hw_encoder = True
         self._sw_bitrate_noted = False
+        # HEVC multi-tier mode (#59 Volet 2, Pi 5 + new HKSV spec): the main
+        # stream is captured at the High tier's size and pushed RAW through
+        # the pipe; ALL encoding (3× x265 tiers + the legacy x264 stream at
+        # camera.width/height) happens in HevcPublisher's single ffmpeg.
+        # Explicit opt-in — never platform-detected. self._width/_height keep
+        # meaning "the main frame's geometry" for every downstream consumer
+        # (night LUT, snapshot, full-FOV selection); the legacy H264 output
+        # geometry moves into the stream info handed to HevcPublisher.
+        self._hevc_cfg = dict(self._cfg.get("hevc") or {})
+        self._hevc_enabled = bool(self._hevc_cfg.get("enabled", False))
+        self._legacy_width, self._legacy_height = self._width, self._height
+        if self._hevc_enabled:
+            _high = dict(self._hevc_cfg.get("high") or {})
+            self._width = int(_high.get("width", 2560))
+            self._height = int(_high.get("height", 1440))
+        self._hevc_stream_info: dict | None = None
+        self._hevc_keyframe_noted = False
 
         self._pipe_r: int = -1
         self._pipe_w: int = -1
@@ -279,6 +296,38 @@ class CameraManager:
         self._picam2.configure(video_cfg)
         self._picam2.pre_callback = self._lores_callback
 
+        if self._hevc_enabled:
+            # Real buffer geometry only exists after configure(): the ISP pads
+            # rows to its alignment (stride ≥ width) and may pad the plane
+            # height too. HevcPublisher describes the exact layout to ffmpeg's
+            # rawvideo demuxer, so nothing is guessed here.
+            main_cfg = self._picam2.camera_configuration()["main"]
+            stride = int(main_cfg["stride"])
+            framesize = int(main_cfg["framesize"])
+            self._hevc_stream_info = {
+                "width": self._width,
+                "height": self._height,
+                "stride": stride,
+                "framesize": framesize,
+                "fps": self._fps,
+                "preset": str(self._hevc_cfg.get("preset", "ultrafast")),
+                "tiers": {
+                    name: dict(self._hevc_cfg.get(name) or {})
+                    for name in ("high", "medium", "low")
+                },
+                "legacy": {
+                    "width": self._legacy_width,
+                    "height": self._legacy_height,
+                    "bitrate": self._bitrate,
+                },
+            }
+            logger.info(
+                "HEVC mode: raw %dx%d (stride %d, framesize %d) → "
+                "3-tier x265 + legacy x264 %dx%d in HevcPublisher",
+                self._width, self._height, stride, framesize,
+                self._legacy_width, self._legacy_height,
+            )
+
         if self._day_gamma > 1.0:
             logger.info(
                 "Day-lift armed (day_gamma=%.1f, engage ≤%.0f lux / release ≥%.0f lux)",
@@ -309,18 +358,34 @@ class CameraManager:
             # VC4-only in practice — keep the historic ioctl behaviour.
             self._hw_encoder = True
 
-        # iperiod = fps → a keyframe every 1 s. Live view (-c:v copy) can only
-        # render once it receives a keyframe, so the shortest practical GOP cuts
-        # the time-to-first-frame. HKSV still works: the prebuffer fragments on
-        # each keyframe (movflags frag_keyframe), yielding 1 s fMP4 fragments —
-        # RETAIN_MS=6000 keeps 6 of them, the declared 4 s fragmentLength is a hint.
-        # Cost: ~10-15 % more bitrate (more keyframes) — negligible at 4 Mbps.
-        # framerate: nominal rate only (SPS on VC4, stream rate on libav) — the
-        # publisher stamps frames by wallclock arrival regardless.
-        self._encoder = H264Encoder(
-            bitrate=self._bitrate, iperiod=self._fps, profile="high",
-            framerate=self._fps,
-        )
+        if self._hevc_enabled:
+            # HEVC mode: no picamera2 encoding at all. The base Encoder class
+            # passes the mapped main frames through untouched (verified in
+            # picamera2 0.3.36: Encoder._encode → outputframe(buffer)), so the
+            # pipe carries raw YUV420 at the High tier's size and every encode
+            # (x265 ladder + legacy x264) lives in HevcPublisher's ffmpeg.
+            from picamera2.encoders import Encoder
+            if self._hw_encoder:
+                logger.warning(
+                    "camera.hevc.enabled on a VC4 platform (Pi 0-4): 3× "
+                    "software HEVC will not keep up on this hardware — "
+                    "intended for the Pi 5 only"
+                )
+            self._encoder = Encoder(framerate=self._fps)
+        else:
+            # iperiod = fps → a keyframe every 1 s. Live view (-c:v copy) can
+            # only render once it receives a keyframe, so the shortest
+            # practical GOP cuts the time-to-first-frame. HKSV still works:
+            # the prebuffer fragments on each keyframe (movflags
+            # frag_keyframe), yielding 1 s fMP4 fragments — RETAIN_MS=6000
+            # keeps 6 of them, the declared 4 s fragmentLength is a hint.
+            # Cost: ~10-15 % more bitrate (more keyframes) — negligible at
+            # 4 Mbps. framerate: nominal rate only (SPS on VC4, stream rate
+            # on libav) — the publisher stamps by wallclock arrival anyway.
+            self._encoder = H264Encoder(
+                bitrate=self._bitrate, iperiod=self._fps, profile="high",
+                framerate=self._fps,
+            )
 
         self._last_frame_time = time.monotonic()
         self._picam2.start()
@@ -348,6 +413,17 @@ class CameraManager:
     def get_h264_read_fd(self) -> int:
         """Return the read-end fd of the H264 pipe. Pass to RtspPublisher."""
         return self._pipe_r
+
+    def get_stream_read_fd(self) -> int:
+        """Read-end fd of the output pipe — H264 in classic mode, raw YUV in
+        HEVC mode. Same pipe either way; the name get_h264_read_fd predates
+        the HEVC mode and is kept for the classic call sites."""
+        return self._pipe_r
+
+    def hevc_stream_info(self) -> dict | None:
+        """Geometry/tier description for HevcPublisher — None unless
+        camera.hevc.enabled (populated by start())."""
+        return self._hevc_stream_info
 
     def _clamp_bitrate(self, bps: int) -> int:
         """Floor depends on the time of day: the stretched night image costs
@@ -398,6 +474,14 @@ class CameraManager:
         control was accepted.
         """
         if self._encoder is None:
+            return False
+        if self._hevc_enabled:
+            # HEVC mode: the pipe carries raw frames — keyframes belong to
+            # the ffmpeg encoders and can't be requested from here. The 1 s
+            # GOP keeps the live start delay bounded anyway (#43 trade-off).
+            if not self._hevc_keyframe_noted:
+                logger.info("force_keyframe is a no-op in HEVC mode (1 s GOP)")
+                self._hevc_keyframe_noted = True
             return False
         if not self._hw_encoder:
             # Pi 5: LibavH264Encoder has a native API for this — no ioctl.
