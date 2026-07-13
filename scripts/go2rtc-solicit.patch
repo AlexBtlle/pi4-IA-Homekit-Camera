@@ -1,0 +1,141 @@
+diff --git a/internal/webrtc/solicit.go b/internal/webrtc/solicit.go
+new file mode 100644
+index 0000000..4e8b6af
+--- /dev/null
++++ b/internal/webrtc/solicit.go
+@@ -0,0 +1,120 @@
++package webrtc
++
++// Accessory-as-offerer signaling for Apple's "HomeKit Secure Video Open
++// Source Compatibility Guide" (Developer Preview 2026-06-03, §5 WebRTC Call
++// Sequence): the HomeKit controller *solicits* an offer and the CAMERA
++// generates the SDP offer; the controller then returns the SDP answer. The
++// stock consumer API only implements the opposite (remote offer → local
++// answer), so this adds two WS messages:
++//
++//	client → {"type":"webrtc/solicit"}            (?src=<stream> in the URL)
++//	go2rtc → {"type":"webrtc/offer","value":sdp}  (complete offer, ICE inline)
++//	client → {"type":"webrtc/answer","value":sdp} (the controller's answer)
++//
++// "webrtc/candidate" keeps working in both directions via the stock
++// candidateHandler — the pending Conn is stored under the same ctx key.
++//
++// Maintained as a patch by pi4-IA-Homekit-Camera (issue #59); apply with
++// scripts/build-go2rtc.sh against the pinned upstream tag.
++
++import (
++	"errors"
++
++	"github.com/AlexxIT/go2rtc/internal/api"
++	"github.com/AlexxIT/go2rtc/internal/api/ws"
++	"github.com/AlexxIT/go2rtc/internal/streams"
++	"github.com/AlexxIT/go2rtc/pkg/core"
++	"github.com/AlexxIT/go2rtc/pkg/webrtc"
++	pion "github.com/pion/webrtc/v3"
++)
++
++func solicitHandler(tr *ws.Transport, msg *ws.Message) error {
++	query := tr.Request.URL.Query()
++	name := query.Get("src")
++	stream := streams.GetOrPatch(query)
++	if stream == nil {
++		return errors.New(api.StreamNotFound)
++	}
++
++	log.Debug().Str("src", name).Msg("[webrtc] new solicited consumer")
++
++	// The server API carries the configured listen port / candidates — the
++	// offer/answer role is independent of it.
++	pc, err := PeerConnection(false)
++	if err != nil {
++		log.Error().Err(err).Caller().Send()
++		return err
++	}
++
++	conn := webrtc.NewConn(pc)
++	conn.Mode = core.ModePassiveConsumer
++	conn.Protocol = "ws"
++	conn.UserAgent = tr.Request.UserAgent()
++	conn.Listen(func(msg any) {
++		switch msg := msg.(type) {
++		case pion.PeerConnectionState:
++			if msg == pion.PeerConnectionStateClosed {
++				stream.RemoveConsumer(conn)
++			}
++		}
++	})
++
++	// Sendonly transceivers shape the offer; the negotiated codecs and
++	// payload types come back with the remote answer (SetAnswer →
++	// UnmarshalMedias inverts the controller's recvonly into our sendonly).
++	medias := []*core.Media{
++		{Kind: core.KindVideo, Direction: core.DirectionSendonly},
++		{Kind: core.KindAudio, Direction: core.DirectionSendonly},
++	}
++
++	// Complete offer (waits for ICE gathering): the HAP characteristic
++	// carrying the offer to the controller has no trickle phase, so the
++	// candidates must ride inside the SDP.
++	offer, err := conn.CreateCompleteOffer(medias)
++	if err != nil {
++		log.Error().Err(err).Caller().Send()
++		return err
++	}
++
++	log.Trace().Msgf("[webrtc] solicited offer:\n%s", offer)
++
++	tr.WithContext(func(ctx map[any]any) {
++		// Same key candidateHandler uses, so remote candidates route here.
++		ctx["webrtc"] = conn
++		ctx["webrtc/solicit-stream"] = stream
++	})
++
++	tr.Write(&ws.Message{Type: "webrtc/offer", Value: offer})
++	return nil
++}
++
++func answerHandler(tr *ws.Transport, msg *ws.Message) error {
++	var conn *webrtc.Conn
++	var stream *streams.Stream
++	tr.WithContext(func(ctx map[any]any) {
++		conn, _ = ctx["webrtc"].(*webrtc.Conn)
++		stream, _ = ctx["webrtc/solicit-stream"].(*streams.Stream)
++	})
++	if conn == nil || stream == nil {
++		return errors.New("webrtc: answer without a solicited session")
++	}
++
++	answer := msg.String()
++	log.Trace().Msgf("[webrtc] solicited answer:\n%s", answer)
++
++	if err := conn.SetAnswer(answer); err != nil {
++		log.Error().Err(err).Caller().Send()
++		return err
++	}
++
++	// Consumer wiring happens only now: AddConsumer matches the stream's
++	// producers against conn.Medias, which SetAnswer just rebuilt from the
++	// controller's answer (mids + negotiated payload types).
++	if err := stream.AddConsumer(conn); err != nil {
++		log.Debug().Err(err).Msg("[webrtc] add solicited consumer")
++		_ = conn.Close()
++		return err
++	}
++
++	return nil
++}
+diff --git a/internal/webrtc/webrtc.go b/internal/webrtc/webrtc.go
+index 989600f..a7119f1 100644
+--- a/internal/webrtc/webrtc.go
++++ b/internal/webrtc/webrtc.go
+@@ -76,6 +76,10 @@ func Init() {
+ 	ws.HandleFunc("webrtc/offer", asyncHandler)
+ 	ws.HandleFunc("webrtc/candidate", candidateHandler)
+ 
++	// HKSV open-spec accessory-as-offerer flow (pi4-IA-Homekit-Camera #59)
++	ws.HandleFunc("webrtc/solicit", solicitHandler)
++	ws.HandleFunc("webrtc/answer", answerHandler)
++
+ 	// sync WebRTC server (two API versions)
+ 	api.HandleFunc("api/webrtc", syncHandler)
+ 
