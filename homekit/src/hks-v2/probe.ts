@@ -69,6 +69,7 @@ import {
   CameraWebRTCStreamManagementService,
   RtpStreamingControlCharacteristic,
   SensorUuidCharacteristic,
+  SetupEndpointsWRCharacteristic,
   StreamingEnabledCharacteristic,
   SupportedAudioStreamTiersCharacteristic,
   SupportedVideoStreamTiersCharacteristic,
@@ -420,13 +421,18 @@ function main(): void {
       return encodeTlv8([{ type: 2, data: uint8(0) }]).toString("base64");
     })
     .updateValue(encodeTlv8([{ type: 2, data: uint8(0) }]).toString("base64"));
-  // §3.6 field finding (session №4): the ATV writes Setup Endpoints with the
-  // SAME TLV shape as legacy R17 — {1: session id, 3: controller address
-  // {1: ip version, 2: ip, 3: video port, 4: audio port}, 4/5: video/audio
-  // SRTP params} — and RETRIES until the accessory answers properly. The
-  // response is served on the follow-up READ (not write-response): {1: id,
-  // 2: status, 3: accessory address, 4/5: echoed SRTP params, 6/7: SSRCs}.
-  const setupChar = rtp.getCharacteristic(Characteristic.SetupEndpoints)!;
+  // §3.6 field findings: session №4 — the ATV writes Setup Endpoints with
+  // the legacy R17 TLV shape and RETRIES; session №5 — it also retried
+  // (backoff 1/2/4 s) despite READING a full legacy-shaped staged response.
+  // Two open hypotheses, both covered here: the response may belong in the
+  // WRITE-RESPONSE (modern command semantics — custom characteristic with
+  // the added perm answers on both channels), and its CONTENT may differ
+  // from legacy (§4.16 moves SSRC assignment into Streaming Control START,
+  // so the legacy SSRC fields 6/7 may be unexpected) — --setup-variant
+  // full | nossrc | minimal picks the payload shape.
+  const variantIdx = process.argv.indexOf("--setup-variant");
+  const setupVariant = variantIdx >= 0 ? process.argv[variantIdx + 1] : "full";
+  const setupChar = rtp.getCharacteristic(SetupEndpointsWRCharacteristic)!;
   setupChar.onSet((value) => {
     const raw = fromB64(value);
     const entries = safeDecode(raw);
@@ -447,18 +453,32 @@ function main(): void {
       { type: 3, data: uint16(50000) }, // probe: declared, nothing bound
       { type: 4, data: uint16(50002) },
     ]);
-    const response = encodeTlv8([
+    const fields = [
       { type: 1, data: sid },
       { type: 2, data: uint8(0) }, // status: success
       { type: 3, data: accessoryAddress },
-      { type: 4, data: tlvGet(entries, 4) ?? Buffer.alloc(0) }, // echo SRTP
-      { type: 5, data: tlvGet(entries, 5) ?? Buffer.alloc(0) },
-      { type: 6, data: crypto.randomBytes(4) }, // video SSRC
-      { type: 7, data: crypto.randomBytes(4) }, // audio SSRC
-    ]);
-    // Served on the controller's follow-up read.
-    setupChar.updateValue(response.toString("base64"));
-    log("RESP", "Setup Endpoints (multi-tier)", "accessory address + SSRCs staged");
+    ];
+    if (setupVariant !== "minimal") {
+      fields.push(
+        { type: 4, data: tlvGet(entries, 4) ?? Buffer.alloc(0) }, // echo SRTP
+        { type: 5, data: tlvGet(entries, 5) ?? Buffer.alloc(0) },
+      );
+    }
+    if (setupVariant === "full") {
+      fields.push(
+        { type: 6, data: crypto.randomBytes(4) }, // video SSRC
+        { type: 7, data: crypto.randomBytes(4) }, // audio SSRC
+      );
+    }
+    const response = encodeTlv8(fields).toString("base64");
+    setupChar.updateValue(response); // read-back channel
+    log(
+      "RESP",
+      "Setup Endpoints (multi-tier)",
+      `variant=${setupVariant}, ${Buffer.from(response, "base64").length} bytes ` +
+        `(hex ${hexDump(Buffer.from(response, "base64"), 96)})`,
+    );
+    return response; // write-response channel
   });
   setupChar.onGet(() => {
     log("READ", "Setup Endpoints (multi-tier)", "→ staged response");

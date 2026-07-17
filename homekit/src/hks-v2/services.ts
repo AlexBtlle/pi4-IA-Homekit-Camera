@@ -147,6 +147,24 @@ export class RtpStreamingControlCharacteristic extends Characteristic {
   }
 }
 
+/**
+ * Stock R17 Setup Endpoints (UUID 118) with WRITE_RESPONSE added: the new
+ * spec's command characteristics all use write-response, and field session
+ * №5 showed the tvOS 27 controller retrying Setup Endpoints despite reading
+ * a legacy-shaped staged response — this variant answers over BOTH channels
+ * (write-response and read-back) to disambiguate which one the new
+ * multi-tier service expects.
+ */
+export class SetupEndpointsWRCharacteristic extends Characteristic {
+  static readonly UUID = "00000118-0000-1000-8000-0026BB765291";
+  constructor() {
+    super("Setup Endpoints", SetupEndpointsWRCharacteristic.UUID, {
+      format: Formats.TLV8,
+      perms: [Perms.PAIRED_READ, Perms.PAIRED_WRITE, Perms.WRITE_RESPONSE],
+    });
+  }
+}
+
 export class SupportedVideoStreamTiersCharacteristic extends Characteristic {
   static readonly UUID = CharacteristicUuid.SupportedVideoStreamTiers;
   constructor() {
@@ -227,7 +245,7 @@ export class CameraMultiTierRtpStreamManagementService extends Service {
     this.addCharacteristic(SupportedVideoStreamTiersCharacteristic);
     this.addCharacteristic(SupportedAudioStreamTiersCharacteristic);
     this.addCharacteristic(Characteristic.SupportedRTPConfiguration);
-    this.addCharacteristic(Characteristic.SetupEndpoints);
+    this.addCharacteristic(SetupEndpointsWRCharacteristic);
     this.addCharacteristic(RtpStreamingControlCharacteristic);
     this.addCharacteristic(SensorUuidCharacteristic);
   }
