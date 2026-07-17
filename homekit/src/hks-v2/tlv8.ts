@@ -124,6 +124,19 @@ export function utf8(s: string): Buffer {
   return Buffer.from(s, "utf8");
 }
 
+/**
+ * Read a little-endian unsigned integer of WHATEVER length the peer sent.
+ * Apple encodes TLV integers with minimal length (a uint32 field holding 1
+ * arrives as one byte) — field-learned the hard way: a fixed-width
+ * readUInt32LE crashed on the tvOS 27 controller's RTP Streaming Control
+ * START, whose tier ids came shorter than their declared width.
+ */
+export function readUIntAuto(buf: Buffer | undefined): number | undefined {
+  if (buf === undefined || buf.length === 0) return undefined;
+  if (buf.length <= 6) return buf.readUIntLE(0, buf.length);
+  return Number(buf.readBigUInt64LE(0));
+}
+
 /** Hex dump for probe logging: "01 06 aa bb …" capped for readability. */
 export function hexDump(buf: Buffer, max = 512): string {
   const shown = buf.subarray(0, max);

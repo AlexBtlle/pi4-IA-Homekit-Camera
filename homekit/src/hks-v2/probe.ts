@@ -92,6 +92,7 @@ import {
   decodeTlv8,
   encodeTlv8,
   hexDump,
+  readUIntAuto,
   tlvGet,
   uint16,
   uint8,
@@ -439,8 +440,8 @@ function main(): void {
     const sid = tlvGet(entries, 1) ?? Buffer.alloc(0);
     const addr = safeDecode(tlvGet(entries, 3) ?? Buffer.alloc(0));
     const ctrlIp = tlvGet(addr, 2)?.toString("utf8") ?? "?";
-    const vPort = tlvGet(addr, 3)?.readUInt16LE() ?? 0;
-    const aPort = tlvGet(addr, 4)?.readUInt16LE() ?? 0;
+    const vPort = readUIntAuto(tlvGet(addr, 3)) ?? 0;
+    const aPort = readUIntAuto(tlvGet(addr, 4)) ?? 0;
     log(
       "WRITE",
       "Setup Endpoints (multi-tier)",
@@ -488,20 +489,30 @@ function main(): void {
     .getCharacteristic(RtpStreamingControlCharacteristic)!
     .onSet((value) => {
       const raw = fromB64(value);
-      const entries = safeDecode(raw);
-      const sid = tlvGet(entries, 1);
-      const command = tlvGet(entries, 2)?.[0];
-      // §4.16: Start carries the SELECTED tier ids + SSRCs — the tier-
-      // selection data this whole probe campaign is after. Log it all.
-      const videoTier = tlvGet(entries, 3)?.readUInt32LE();
-      const audioTier = tlvGet(entries, 5)?.readUInt32LE();
-      log(
-        "WRITE",
-        "RTP Streaming Control",
-        `command=${command === 2 ? "START" : command === 1 ? "END" : command} ` +
-          `videoTier=${videoTier ?? "-"} audioTier=${audioTier ?? "-"} | ` +
-          describeTlv(raw),
-      );
+      // Hex first, parse second: session №6's START crashed a fixed-width
+      // integer read and the payload was lost. Never again.
+      log("WRITE", "RTP Streaming Control", describeTlv(raw));
+      let sid: Buffer | undefined;
+      try {
+        const entries = safeDecode(raw);
+        sid = tlvGet(entries, 1);
+        const command = tlvGet(entries, 2)?.[0];
+        // §4.16 START: {3: video tier id, 4: video SSRC, 5: audio tier id,
+        // 6: audio SSRC} — minimal-length integers (readUIntAuto).
+        const videoTier = readUIntAuto(tlvGet(entries, 3));
+        const videoSsrc = readUIntAuto(tlvGet(entries, 4));
+        const audioTier = readUIntAuto(tlvGet(entries, 5));
+        const audioSsrc = readUIntAuto(tlvGet(entries, 6));
+        log(
+          "INFO",
+          "RTP Streaming Control parsed",
+          `command=${command === 2 ? "START" : command === 1 ? "END" : command} ` +
+            `videoTier=${videoTier ?? "-"} videoSSRC=${videoSsrc ?? "-"} ` +
+            `audioTier=${audioTier ?? "-"} audioSSRC=${audioSsrc ?? "-"}`,
+        );
+      } catch (err) {
+        log("INFO", "RTP Streaming Control parse failed", (err as Error).message);
+      }
       return encodeTlv8([
         { type: 1, data: sid ?? Buffer.alloc(0) },
         { type: 2, data: uint8(0) }, // Status: Success
