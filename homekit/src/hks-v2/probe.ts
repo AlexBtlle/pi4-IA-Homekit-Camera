@@ -22,10 +22,20 @@
  *   service: the beta knows the spec exists.
  * - "WRITE WebRTC Solicit Offer" → the controller initiates the new live
  *   view flow (per §5 the ACCESSORY generates the SDP offer!): full go.
- * - Nothing beyond pairing → the beta doesn't drive the new services yet;
- *   re-test on the next beta / GA (September). Compare with --with-legacy
- *   to check whether a legacy RTP service is a prerequisite for the Home
- *   app to treat the accessory as a camera at all.
+ * - "WRITE Setup Endpoints (multi-tier)" / "WRITE RTP Streaming Control" →
+ *   the controller drives the new MULTI-TIER RTP path for live view.
+ * - Nothing beyond pairing → compare with --with-legacy (is a legacy RTP
+ *   service a prerequisite?) and across --codec values.
+ *
+ * Field session №1 (tvOS 27 beta, 2026-07): every new characteristic was
+ * READ (Capabilities, tiers, Sensor UUID) and the controller WROTE the new
+ * Global Operating Mode characteristics once a camera profile existed — but
+ * it never solicited WebRTC and used the LEGACY RTP path for live view.
+ * Hypotheses this revision tests: (a) H.265-only tiers made the controller
+ * skip WebRTC → --codec h264|h265|both (default both); (b) the multi-tier
+ * RTP service (§3.6) is the expected LAN live path → now included, fully
+ * instrumented; (c) a camera needs a motion sensor to get the full HKSV
+ * treatment → stock MotionSensor now included.
  */
 import crypto from "crypto";
 import fs from "fs";
@@ -55,9 +65,13 @@ import {
   CameraCapabilitiesCharacteristic,
   CameraCapabilitiesService,
   CameraGlobalOperatingModeService,
+  CameraMultiTierRtpStreamManagementService,
   CameraWebRTCStreamManagementService,
+  RtpStreamingControlCharacteristic,
   SensorUuidCharacteristic,
   StreamingEnabledCharacteristic,
+  SupportedAudioStreamTiersCharacteristic,
+  SupportedVideoStreamTiersCharacteristic,
   WebRTCNumberOfActiveSessionsCharacteristic,
   WebRTCProvideAnswerCharacteristic,
   WebRTCReofferCharacteristic,
@@ -149,6 +163,12 @@ function lanIp(): string {
 
 function main(): void {
   const withLegacy = process.argv.includes("--with-legacy");
+  const codecIdx = process.argv.indexOf("--codec");
+  const codecMode = codecIdx >= 0 ? process.argv[codecIdx + 1] : "both";
+  if (!["h264", "h265", "both"].includes(codecMode)) {
+    console.error(`unknown --codec ${codecMode} (h264 | h265 | both)`);
+    process.exit(1);
+  }
 
   fs.mkdirSync(PROBE_DIR, { recursive: true, mode: 0o700 });
   HAPStorage.setCustomStoragePath(PROBE_DIR);
@@ -156,6 +176,27 @@ function main(): void {
   const sensorUuid = Buffer.from(identity.sensorUuidHex, "hex");
   const tiers = defaultTiers2K();
   const ip = lanIp();
+
+  // Advertised video tiers: one TLV struct per codec, 0x00-separated when
+  // both are offered. Field question (session №1 saw H.265-only tiers and
+  // no WebRTC solicitation): does an H.264 block change controller behavior?
+  const videoTiersPayload = Buffer.concat(
+    (codecMode === "both"
+      ? [
+          buildVideoStreamTiers(VideoCodec.H264, 99, tiers),
+          buildVideoStreamTiers(VideoCodec.H265, 96, tiers),
+        ]
+      : [
+          buildVideoStreamTiers(
+            codecMode === "h264" ? VideoCodec.H264 : VideoCodec.H265,
+            codecMode === "h264" ? 99 : 96,
+            tiers,
+          ),
+        ]
+    ).flatMap((block, i) => (i > 0 ? [Buffer.from([0, 0]), block] : [block])),
+  );
+  const codecLabel =
+    codecMode === "both" ? "H.264+H.265" : codecMode.toUpperCase();
 
   const accessory = new Accessory(
     "HKSV v2 Probe",
@@ -225,11 +266,10 @@ function main(): void {
     WebRTCNumberOfActiveSessionsCharacteristic,
   )!;
 
-  const videoTiersPayload = buildVideoStreamTiers(VideoCodec.H265, 96, tiers);
   webrtc
     .getCharacteristic(WebRTCSupportedVideoStreamTiersCharacteristic)!
     .onGet(() => {
-      log("READ", "WebRTC Supported Video Stream Tiers", `→ H.265, ${tiers.length} tiers`);
+      log("READ", "WebRTC Supported Video Stream Tiers", `→ ${codecLabel}, ${tiers.length} tiers`);
       return videoTiersPayload.toString("base64");
     })
     .updateValue(videoTiersPayload.toString("base64"));
@@ -345,6 +385,76 @@ function main(): void {
   activeSessions.updateValue(0);
   accessory.addService(webrtc);
 
+  // --- §3.6 Camera Multi-Tier RTP Stream Management ------------------------
+  // Fully instrumented stub: field session №1 suggests this is the LAN live
+  // path the controller expects (it fell back to LEGACY RTP when present and
+  // never solicited WebRTC).
+  const rtp = new CameraMultiTierRtpStreamManagementService();
+  rtp
+    .getCharacteristic(SupportedVideoStreamTiersCharacteristic)!
+    .onGet(() => {
+      log("READ", "RTP Supported Video Stream Tiers", `→ ${codecLabel}, ${tiers.length} tiers`);
+      return videoTiersPayload.toString("base64");
+    })
+    .updateValue(videoTiersPayload.toString("base64"));
+  rtp
+    .getCharacteristic(SupportedAudioStreamTiersCharacteristic)!
+    .onGet(() => {
+      log("READ", "RTP Supported Audio Stream Tiers", "→ Opus 48 kHz");
+      return audioTiersPayload.toString("base64");
+    })
+    .updateValue(audioTiersPayload.toString("base64"));
+  rtp
+    .getCharacteristic(Characteristic.SupportedRTPConfiguration)!
+    .onGet(() => {
+      log("READ", "RTP Supported RTP Configuration");
+      // §3.6: must be AES_CM_128_HMAC_SHA1_80 (type 2 = crypto suite, 0).
+      return encodeTlv8([{ type: 2, data: uint8(0) }]).toString("base64");
+    })
+    .updateValue(encodeTlv8([{ type: 2, data: uint8(0) }]).toString("base64"));
+  rtp
+    .getCharacteristic(Characteristic.SetupEndpoints)!
+    .onSet((value) => {
+      log("WRITE", "Setup Endpoints (multi-tier)", describeTlv(fromB64(value)));
+      // Observation only: echo the write so a follow-up read isn't empty.
+      return value as string;
+    });
+  rtp
+    .getCharacteristic(RtpStreamingControlCharacteristic)!
+    .onSet((value) => {
+      const raw = fromB64(value);
+      const sid = safeDecode(raw).find((e) => e.type === 1)?.data;
+      log("WRITE", "RTP Streaming Control", describeTlv(raw));
+      return encodeTlv8([
+        { type: 1, data: sid ?? Buffer.alloc(0) },
+        { type: 2, data: uint8(0) }, // Status: Success
+      ]).toString("base64");
+    });
+  rtp
+    .getCharacteristic(StreamingEnabledCharacteristic)!
+    .onGet(() => {
+      log("READ", "Streaming Enabled (RTP svc)", `→ ${streamingEnabled}`);
+      return streamingEnabled;
+    })
+    .updateValue(streamingEnabled);
+  rtp.getCharacteristic(Characteristic.StatusActive)!.updateValue(true);
+  rtp
+    .getCharacteristic(SensorUuidCharacteristic)!
+    .updateValue(sensorUuid.toString("base64"));
+  accessory.addService(rtp);
+
+  // --- Motion sensor (stock) — makes the accessory a complete camera
+  // profile; HKSV behaviors may be gated on its presence.
+  const motionService = new Service.MotionSensor("Probe Motion");
+  motionService
+    .getCharacteristic(Characteristic.MotionDetected)!
+    .onGet(() => {
+      log("READ", "Motion Detected", "→ false");
+      return false;
+    })
+    .updateValue(false);
+  accessory.addService(motionService);
+
   // --- optional legacy CameraController ------------------------------------
   // Comparison arm: does the Home app need a classic RTP streaming service
   // to treat the accessory as a camera at all? (Stub: 1x1 JPEG snapshots,
@@ -370,6 +480,8 @@ function main(): void {
   qrcode.generate(accessory.setupURI(), { small: true });
   console.log(`  PIN: ${PINCODE}   (identity: ${identity.username})`);
   console.log(`  Mode: ${withLegacy ? "new services + legacy controller" : "new services only"}`);
+  console.log(`  Codec advertised: ${codecLabel} | services: capabilities, op-mode,`);
+  console.log(`  WebRTC, multi-tier RTP, motion${withLegacy ? ", legacy controller" : ""}`);
   console.log("==========================================================");
   console.log("");
 

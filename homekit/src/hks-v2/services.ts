@@ -140,6 +140,35 @@ export class WebRTCSupportedAudioStreamTiersCharacteristic extends Characteristi
   }
 }
 
+export class RtpStreamingControlCharacteristic extends Characteristic {
+  static readonly UUID = CharacteristicUuid.RtpStreamingControl;
+  constructor() {
+    super("RTP Streaming Control", RtpStreamingControlCharacteristic.UUID, commandProps());
+  }
+}
+
+export class SupportedVideoStreamTiersCharacteristic extends Characteristic {
+  static readonly UUID = CharacteristicUuid.SupportedVideoStreamTiers;
+  constructor() {
+    super(
+      "Supported Video Stream Tiers",
+      SupportedVideoStreamTiersCharacteristic.UUID,
+      { format: Formats.TLV8, perms: [Perms.PAIRED_READ, Perms.NOTIFY] },
+    );
+  }
+}
+
+export class SupportedAudioStreamTiersCharacteristic extends Characteristic {
+  static readonly UUID = CharacteristicUuid.SupportedAudioStreamTiers;
+  constructor() {
+    super(
+      "Supported Audio Stream Tiers",
+      SupportedAudioStreamTiersCharacteristic.UUID,
+      { format: Formats.TLV8, perms: [Perms.PAIRED_READ, Perms.NOTIFY] },
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Services
 // ---------------------------------------------------------------------------
@@ -175,6 +204,32 @@ export class CameraGlobalOperatingModeService extends Service {
     this.addCharacteristic(Characteristic.HomeKitCameraActive);
     this.addCharacteristic(StreamingEnabledCharacteristic);
     this.addCharacteristic(Characteristic.CameraOperatingModeIndicator);
+  }
+}
+
+/**
+ * §3.6 Camera Multi-Tier RTP Stream Management — the new spec's LAN
+ * streaming service (≥ 5 simultaneous RTP sessions). Field observation
+ * (tvOS 27 beta, 2026-07): with only the WebRTC service present the
+ * controller never solicited an offer, so this service is likely the
+ * preferred live path — the probe carries it to confirm.
+ */
+export class CameraMultiTierRtpStreamManagementService extends Service {
+  static readonly UUID = ServiceUuid.CameraMultiTierRtpStreamManagement;
+  constructor(subtype?: string) {
+    super(
+      "Camera Multi-Tier RTP Stream Management",
+      CameraMultiTierRtpStreamManagementService.UUID,
+      subtype,
+    );
+    this.addCharacteristic(StreamingEnabledCharacteristic);
+    this.addCharacteristic(Characteristic.StatusActive);
+    this.addCharacteristic(SupportedVideoStreamTiersCharacteristic);
+    this.addCharacteristic(SupportedAudioStreamTiersCharacteristic);
+    this.addCharacteristic(Characteristic.SupportedRTPConfiguration);
+    this.addCharacteristic(Characteristic.SetupEndpoints);
+    this.addCharacteristic(RtpStreamingControlCharacteristic);
+    this.addCharacteristic(SensorUuidCharacteristic);
   }
 }
 
