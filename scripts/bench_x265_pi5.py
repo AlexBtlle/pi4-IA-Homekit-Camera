@@ -47,8 +47,6 @@ import sys
 import threading
 import time
 
-REPORT_DEFAULT = "bench_x265_report.md"
-
 TIERS = [
     # (name, width, height, fps, avg_kbps, max_kbps) — High geometry comes
     # from --size; Medium/Low are fixed by the spec's 2K-camera ladder.
@@ -78,11 +76,19 @@ def parse_args():
                    help="comma list of x265 tiers to run (capacity mapping: "
                         "field run 2026-07 showed the full 4-encode ladder "
                         "saturates at ~10.7/30 fps, so single-tier runs "
-                        "establish the real ceiling). e.g. --tiers high")
+                        "establish the real ceiling). e.g. --tiers high, or "
+                        "'none' to measure the x264 leg alone")
+    p.add_argument("--legacy-size", default="1920x1080",
+                   help="x264 leg output size (default 1920x1080). With "
+                        "--tiers none this measures a pure x264 run — e.g. "
+                        "--legacy-size 2304x1296 tests the '2K over H.264' "
+                        "hypothesis (x264 is ~4-5x cheaper per pixel)")
     p.add_argument("--analysis-fps", type=float, default=10.0,
                    help="detection analysis rate (default 10, like production)")
-    p.add_argument("--report", default=REPORT_DEFAULT,
-                   help=f"output report path (default {REPORT_DEFAULT})")
+    p.add_argument("--report", default=None,
+                   help="output report path (default: derived from the run "
+                        "config, e.g. bench_2304x1296@30_x265-high_x264.md — "
+                        "so successive mapping runs never overwrite each other)")
     return p.parse_args()
 
 
@@ -165,13 +171,14 @@ def x265_output(name, fps, avg_kbps, max_kbps, preset, pad):
 
 
 def build_ffmpeg_cmd(width, height, fps, preset, legacy_h264=True,
-                     tiers=("high", "medium", "low")):
+                     tiers=("high", "medium", "low"),
+                     legacy_size="1920x1080"):
     (m_name, m_w, m_h, m_fps, m_avg, m_max) = TIERS[0]
     (l_name, l_w, l_h, l_fps, l_avg, l_max) = TIERS[1]
     pads = {"high": "[hi]", "medium": "[mid]", "low": "[lo]"}
     selected = [t for t in ("high", "medium", "low") if t in tiers]
-    if not selected:
-        raise SystemExit("--tiers must select at least one of high,medium,low")
+    if not selected and not legacy_h264:
+        raise SystemExit("nothing to encode: --tiers none requires the x264 leg")
     n = len(selected) + (1 if legacy_h264 else 0)
     fc = f"[0:v]split={n}" + "".join(pads[t] for t in selected) \
         + ("[leg]" if legacy_h264 else "")
@@ -180,7 +187,8 @@ def build_ffmpeg_cmd(width, height, fps, preset, legacy_h264=True,
     if "low" in selected:
         fc += f";[lo]scale={l_w}:{l_h},fps={l_fps}[lo2]"
     if legacy_h264:
-        fc += ";[leg]scale=1920:1080[leg2]"
+        leg_w, leg_h = legacy_size.lower().split("x")
+        fc += f";[leg]scale={leg_w}:{leg_h}[leg2]"
     cmd = [
         "ffmpeg", "-hide_banner", "-nostats", "-y",
         "-f", "rawvideo", "-pix_fmt", "yuv420p",
@@ -280,9 +288,20 @@ def main():
 
     detection = DetectionLoad(args.analysis_fps) if args.with_detection else None
 
-    tiers = tuple(t.strip() for t in args.tiers.split(",") if t.strip())
+    tiers = tuple(
+        t.strip() for t in args.tiers.split(",")
+        if t.strip() and t.strip() != "none"
+    )
+    if args.report is None:
+        tag = f"{width}x{height}@{args.fps}_x265-{'+'.join(tiers) or 'none'}"
+        if not args.no_legacy_h264:
+            tag += f"_x264-{args.legacy_size}"
+        if args.with_detection:
+            tag += "_det"
+        args.report = f"bench_{tag}.md"
     cmd = build_ffmpeg_cmd(width, height, args.fps, args.preset,
-                           legacy_h264=not args.no_legacy_h264, tiers=tiers)
+                           legacy_h264=not args.no_legacy_h264, tiers=tiers,
+                           legacy_size=args.legacy_size)
     ff = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=False)
 
@@ -302,7 +321,7 @@ def main():
         detection.start()
 
     print(f"# bench: {width}x{height}@{args.fps} | x265 tiers: {args.tiers}"
-          f"{'' if args.no_legacy_h264 else ' + x264 1080p legacy'}"
+          f"{'' if args.no_legacy_h264 else f' + x264 {args.legacy_size} legacy'}"
           f" | preset {args.preset} | {args.duration}s"
           f"{' | +detection' if detection else ''}")
     print(f"# sensor mode: {sensor_size} | main stride {stride}")
@@ -388,7 +407,7 @@ def write_report(args, width, height, sensor_size, stride, ffmpeg_version,
         "",
         f"- Config : capture **{width}x{height}@{args.fps}**, paliers x265 : "
         f"`{args.tiers}`"
-        + ("" if args.no_legacy_h264 else " + x264 1080p legacy (4000k)")
+        + ("" if args.no_legacy_h264 else f" + x264 {args.legacy_size} legacy (4000k)")
         + f", preset `{args.preset}`, tune `zerolatency`, GOP 1 s",
         f"- Mode capteur : {sensor_size}, main stride {stride}"
         + (" (repack par frame)" if stride != width else ""),
