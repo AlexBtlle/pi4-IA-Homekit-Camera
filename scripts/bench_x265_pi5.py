@@ -74,6 +74,11 @@ def parse_args():
                    help="drop the 4th output leg (x264 1080p). The real "
                         "deployment keeps rtsp://…/camera alive with it, so "
                         "the DEFAULT (4 encodes) is the faithful load")
+    p.add_argument("--tiers", default="high,medium,low",
+                   help="comma list of x265 tiers to run (capacity mapping: "
+                        "field run 2026-07 showed the full 4-encode ladder "
+                        "saturates at ~10.7/30 fps, so single-tier runs "
+                        "establish the real ceiling). e.g. --tiers high")
     p.add_argument("--analysis-fps", type=float, default=10.0,
                    help="detection analysis rate (default 10, like production)")
     p.add_argument("--report", default=REPORT_DEFAULT,
@@ -159,16 +164,21 @@ def x265_output(name, fps, avg_kbps, max_kbps, preset, pad):
     ]
 
 
-def build_ffmpeg_cmd(width, height, fps, preset, legacy_h264=True):
+def build_ffmpeg_cmd(width, height, fps, preset, legacy_h264=True,
+                     tiers=("high", "medium", "low")):
     (m_name, m_w, m_h, m_fps, m_avg, m_max) = TIERS[0]
     (l_name, l_w, l_h, l_fps, l_avg, l_max) = TIERS[1]
-    n = 4 if legacy_h264 else 3
-    pads = "[hi][mid][lo]" + ("[leg]" if legacy_h264 else "")
-    fc = (
-        f"[0:v]split={n}{pads};"
-        f"[mid]scale={m_w}:{m_h}[mid2];"
-        f"[lo]scale={l_w}:{l_h},fps={l_fps}[lo2]"
-    )
+    pads = {"high": "[hi]", "medium": "[mid]", "low": "[lo]"}
+    selected = [t for t in ("high", "medium", "low") if t in tiers]
+    if not selected:
+        raise SystemExit("--tiers must select at least one of high,medium,low")
+    n = len(selected) + (1 if legacy_h264 else 0)
+    fc = f"[0:v]split={n}" + "".join(pads[t] for t in selected) \
+        + ("[leg]" if legacy_h264 else "")
+    if "medium" in selected:
+        fc += f";[mid]scale={m_w}:{m_h}[mid2]"
+    if "low" in selected:
+        fc += f";[lo]scale={l_w}:{l_h},fps={l_fps}[lo2]"
     if legacy_h264:
         fc += ";[leg]scale=1920:1080[leg2]"
     cmd = [
@@ -177,12 +187,15 @@ def build_ffmpeg_cmd(width, height, fps, preset, legacy_h264=True):
         "-s", f"{width}x{height}", "-r", str(fps), "-i", "pipe:0",
         "-filter_complex", fc,
     ]
-    cmd += x265_output("high", fps, 2800, 3000, preset, "hi")
-    cmd += x265_output(m_name, m_fps, m_avg, m_max, preset, "mid2")
-    cmd += x265_output(l_name, l_fps, l_avg, l_max, preset, "lo2")
+    if "high" in selected:
+        cmd += x265_output("high", fps, 2800, 3000, preset, "hi")
+    if "medium" in selected:
+        cmd += x265_output(m_name, m_fps, m_avg, m_max, preset, "mid2")
+    if "low" in selected:
+        cmd += x265_output(l_name, l_fps, l_avg, l_max, preset, "lo2")
     if legacy_h264:
-        # The deployment's 4th leg (hevc_publisher.py): the legacy H.264
-        # stream that keeps the existing HomeKit path alive on the Pi 5.
+        # The deployment's legacy leg (hevc_publisher.py): the H.264 stream
+        # that keeps the existing HomeKit path alive on the Pi 5.
         cmd += [
             "-map", "[leg2]", "-c:v", "libx264", "-preset", "superfast",
             "-tune", "zerolatency", "-profile:v", "high", "-b:v", "4000k",
@@ -267,8 +280,9 @@ def main():
 
     detection = DetectionLoad(args.analysis_fps) if args.with_detection else None
 
+    tiers = tuple(t.strip() for t in args.tiers.split(",") if t.strip())
     cmd = build_ffmpeg_cmd(width, height, args.fps, args.preset,
-                           legacy_h264=not args.no_legacy_h264)
+                           legacy_h264=not args.no_legacy_h264, tiers=tiers)
     ff = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=False)
 
@@ -287,8 +301,8 @@ def main():
     if detection:
         detection.start()
 
-    print(f"# bench: {width}x{height}@{args.fps} High + 1080p30 Medium + "
-          f"360p15 Low{'' if args.no_legacy_h264 else ' + x264 1080p legacy'}"
+    print(f"# bench: {width}x{height}@{args.fps} | x265 tiers: {args.tiers}"
+          f"{'' if args.no_legacy_h264 else ' + x264 1080p legacy'}"
           f" | preset {args.preset} | {args.duration}s"
           f"{' | +detection' if detection else ''}")
     print(f"# sensor mode: {sensor_size} | main stride {stride}")
@@ -372,8 +386,8 @@ def write_report(args, width, height, sensor_size, stride, ffmpeg_version,
     lines = [
         "## Bench x265 3 paliers — Pi 5",
         "",
-        f"- Config : High **{width}x{height}@{args.fps}** (2800/3000k) + "
-        f"Medium 1920x1080@30 (1700/1800k) + Low 640x360@15 (180/190k)"
+        f"- Config : capture **{width}x{height}@{args.fps}**, paliers x265 : "
+        f"`{args.tiers}`"
         + ("" if args.no_legacy_h264 else " + x264 1080p legacy (4000k)")
         + f", preset `{args.preset}`, tune `zerolatency`, GOP 1 s",
         f"- Mode capteur : {sensor_size}, main stride {stride}"
