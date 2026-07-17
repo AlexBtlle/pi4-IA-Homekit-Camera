@@ -37,6 +37,7 @@
  * instrumented; (c) a camera needs a motion sensor to get the full HKSV
  * treatment → stock MotionSensor now included.
  */
+import { ChildProcess, spawn } from "child_process";
 import crypto from "crypto";
 import fs from "fs";
 import os from "os";
@@ -433,6 +434,79 @@ function main(): void {
   // full | nossrc | minimal picks the payload shape.
   const variantIdx = process.argv.indexOf("--setup-variant");
   const setupVariant = variantIdx >= 0 ? process.argv[variantIdx + 1] : "full";
+  // v5: real SRTP media on START. Session №7 completed the control loop
+  // (Setup accepted, START with videoTier=1 — the ATV PICKED the 2K H.264
+  // High tier); what remained was media. --rtsp-src selects the source
+  // (default: the production camera's stream, so the first picture works
+  // without switching the Pi to hevc mode).
+  const srcIdx = process.argv.indexOf("--rtsp-src");
+  const rtspSrc =
+    srcIdx >= 0 ? process.argv[srcIdx + 1] : "rtsp://localhost:8554/camera";
+  interface RtpSession {
+    ctrlIp: string;
+    videoPort: number;
+    /** master key (16) || salt (14) from the controller's Setup write */
+    videoSrtp: Buffer;
+  }
+  const rtpSessions = new Map<string, RtpSession>();
+  const mediaSenders = new Map<string, ChildProcess>();
+
+  const stopMedia = (sidHex: string, why: string) => {
+    const ff = mediaSenders.get(sidHex);
+    if (ff) {
+      mediaSenders.delete(sidHex);
+      ff.kill("SIGKILL");
+      log("INFO", "media sender stopped", `${sidHex.slice(0, 8)}… (${why})`);
+    }
+  };
+
+  const startMedia = (sidHex: string, ssrc: number) => {
+    const session = rtpSessions.get(sidHex);
+    if (!session) {
+      log("INFO", "media start skipped", "unknown session");
+      return;
+    }
+    stopMedia(sidHex, "superseded");
+    // Same proven arg set as streaming.ts (fast-start flags, -c:v copy,
+    // SRTP mux). Payload type 99 = what our H.264 tier block advertises;
+    // SSRC is CONTROLLER-assigned in the new spec's START (signed for
+    // ffmpeg's int parser). Video-only for now: the ATV negotiated an Opus
+    // audio tier but our cameras have no mic — observe its tolerance.
+    const args = [
+      "-hide_banner", "-loglevel", "error",
+      "-fflags", "nobuffer", "-flags", "low_delay",
+      "-analyzeduration", "0", "-probesize", "32",
+      "-rtsp_transport", "tcp",
+      "-i", rtspSrc,
+      "-an", "-sn", "-dn",
+      "-codec:v", "copy",
+      "-f", "rtp",
+      "-payload_type", "99",
+      "-ssrc", String(ssrc | 0),
+      "-srtp_out_suite", "AES_CM_128_HMAC_SHA1_80",
+      "-srtp_out_params", session.videoSrtp.toString("base64"),
+      `srtp://${session.ctrlIp}:${session.videoPort}` +
+        `?rtcpport=${session.videoPort}&pkt_size=1316`,
+    ];
+    const ff = spawn("ffmpeg", args);
+    mediaSenders.set(sidHex, ff);
+    log(
+      "INFO",
+      "media sender started",
+      `${rtspSrc} → srtp://${session.ctrlIp}:${session.videoPort} ` +
+        `ssrc=${ssrc} pt=99`,
+    );
+    ff.stderr.on("data", (d: Buffer) =>
+      log("INFO", "ffmpeg", d.toString().trim()),
+    );
+    ff.on("close", (code) => {
+      if (mediaSenders.get(sidHex) === ff) {
+        mediaSenders.delete(sidHex);
+        log("INFO", "media sender exited", `code ${code}`);
+      }
+    });
+  };
+
   const setupChar = rtp.getCharacteristic(SetupEndpointsWRCharacteristic)!;
   setupChar.onSet((value) => {
     const raw = fromB64(value);
@@ -448,6 +522,18 @@ function main(): void {
       `session ${sid.toString("hex").slice(0, 8)}… controller ${ctrlIp} ` +
         `video:${vPort} audio:${aPort}`,
     );
+    // Remember the media parameters for the upcoming START: destination +
+    // the CONTROLLER's SRTP key/salt (it decrypts our stream with the keys
+    // it generated — same convention the legacy path uses).
+    const videoParams = safeDecode(tlvGet(entries, 4) ?? Buffer.alloc(0));
+    rtpSessions.set(sid.toString("hex"), {
+      ctrlIp,
+      videoPort: vPort,
+      videoSrtp: Buffer.concat([
+        tlvGet(videoParams, 2) ?? Buffer.alloc(0), // master key
+        tlvGet(videoParams, 3) ?? Buffer.alloc(0), // salt
+      ]),
+    });
     const accessoryAddress = encodeTlv8([
       { type: 1, data: uint8(0) }, // IPv4
       { type: 2, data: utf8(ip) },
@@ -510,6 +596,13 @@ function main(): void {
             `videoTier=${videoTier ?? "-"} videoSSRC=${videoSsrc ?? "-"} ` +
             `audioTier=${audioTier ?? "-"} audioSSRC=${audioSsrc ?? "-"}`,
         );
+        const sidHex = sid?.toString("hex") ?? "";
+        if (command === 2 && videoSsrc !== undefined) {
+          startMedia(sidHex, videoSsrc); // v5: real SRTP video
+        } else if (command === 1) {
+          stopMedia(sidHex, "controller END");
+          rtpSessions.delete(sidHex);
+        }
       } catch (err) {
         log("INFO", "RTP Streaming Control parse failed", (err as Error).message);
       }
