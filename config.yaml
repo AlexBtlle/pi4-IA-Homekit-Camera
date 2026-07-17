@@ -49,30 +49,33 @@ camera:
   control_port: 8990      # localhost-only endpoint (HomeKit app → camera) driving the
                           # dynamic bitrate — never exposed on the network
 
-  # ── HEVC multi-tier mode [EXPERIMENTAL #59 — Pi 5 ONLY] ────────────────────
-  # The new HKSV spec's 2K ladder: main is captured RAW at the High tier's
-  # size and ONE ffmpeg produces 3× H.265 (libx265) tiers plus the legacy
-  # H.264 stream (camera.width/height above), which keeps the existing
-  # HomeKit path working unchanged. Needs the SYSTEM ffmpeg (apt) with
-  # libx265 — not the project's static build. 4 simultaneous software
-  # encodes: strictly a Pi 5 feature, never enable on a Pi 0-4.
+  # ── Multi-tier 2K mode [EXPERIMENTAL #59 — Pi 5 ONLY] ──────────────────────
+  # The new HKSV spec's tier ladder: main is captured RAW at the High tier's
+  # size and ONE ffmpeg produces every encode, including the legacy H.264
+  # stream (camera.width/height above) that keeps the existing HomeKit path
+  # working unchanged. Needs the SYSTEM ffmpeg (apt) — not the static build.
+  # Strictly a Pi 5 feature, never enable on a Pi 0-4.
+  #
+  # Per-tier codec, defaults from the measured Pi 5 capacity map (issue #59):
+  # 2K30 x265 saturates all 4 cores at 23.8/30 fps (HEVC 2K = out of software
+  # reach), while 2K30 x264 runs at ~40 % SoC and the full candidate config
+  # (2K x264 + Low + detection) at 54 %. `codec: h265` remains available per
+  # tier for what the tvOS 27 probe reveals about hub codec requirements.
   hevc:
     enabled: false
-    preset: ultrafast     # x265 preset for all tiers — to revisit with the
-                          # scripts/bench_x265_pi5.py numbers on real hardware
-    high:                 # spec "2K Camera" High tier (bitrates in bit/s);
-      width: 2560         # 2304x1296 = IMX708 native binned alternative
-      height: 1440        # (the spec allows approximate resolutions)
+    preset: ultrafast     # x265 preset (only used by tiers with codec: h265)
+    high:
+      codec: h264         # field-measured: the only codec that sustains 2K30
+      width: 2304         # IMX708 native binned — the spec allows approximate
+      height: 1296        # resolutions; a 2560x1440 upscale costs +23 % encode
       fps: 30
-      bitrate: 2800000
-      max_bitrate: 3000000
+      bitrate: 4500000    # H.264 needs more bits than HEVC at 2K; fine on LAN
+      max_bitrate: 5000000
     medium:
-      width: 1920
-      height: 1080
-      fps: 30
-      bitrate: 1700000
-      max_bitrate: 1800000
+      enabled: false      # 1080p Medium = the legacy /camera x264 stream,
+                          # reused by the WebRTC layer — zero extra encode
     low:
+      codec: h264
       width: 640
       height: 360
       fps: 15

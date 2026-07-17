@@ -39,9 +39,9 @@ class FakeEngine implements WebRtcEngine {
 describe("WebRTCSessionManager", () => {
   test("solicit returns a 16-byte session id and the engine's offer", async () => {
     const mgr = new WebRTCSessionManager(new FakeEngine());
-    const { sessionId, sdpOffer } = await mgr.solicitOffer("camera_hevc_high");
+    const { sessionId, sdpOffer } = await mgr.solicitOffer("camera_high");
     expect(sessionId).toHaveLength(16);
-    expect(sdpOffer).toBe("v=0 offer-for-camera_hevc_high");
+    expect(sdpOffer).toBe("v=0 offer-for-camera_high");
     expect(mgr.count).toBe(1);
   });
 

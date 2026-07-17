@@ -42,7 +42,7 @@ describe("Go2RtcEngine (patched-protocol client)", () => {
     });
     cleanup = srv.close;
 
-    const session = await new Go2RtcEngine(srv.url).solicit("camera_hevc_high");
+    const session = await new Go2RtcEngine(srv.url).solicit("camera_high");
     expect(session.offer).toBe("v=0 fake-offer");
 
     await session.provideAnswer("v=0 fake-answer");

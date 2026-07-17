@@ -1,17 +1,27 @@
 """
-HEVC multi-tier publisher (#59 Volet 2 — Pi 5 + the new HKSV spec).
+Multi-tier publisher (#59 Volet 2 — Pi 5 + the new HKSV spec).
 
-Consumes the RAW YUV420 pipe that CameraManager produces in HEVC mode and
-runs the entire encode fan-out in ONE ffmpeg process:
+Consumes the RAW YUV420 pipe that CameraManager produces in multi-tier mode
+and runs the entire encode fan-out in ONE ffmpeg process. Per-tier codec is
+configurable; the DEFAULTS encode the Pi 5 capacity map measured on real
+hardware (issue #59, 2026-07):
 
-    raw 2K YUV ─► split ─┬─► libx265  High   (e.g. 2560x1440@30) ─► rtsp …/camera_hevc_high
-                         ├─► libx265  Medium (1920x1080@30)      ─► rtsp …/camera_hevc_medium
-                         ├─► libx265  Low    (640x360@15)        ─► rtsp …/camera_hevc_low
-                         └─► libx264  legacy (camera.width/height) ─► rtsp …/camera
+  - 2K30 x265 alone: 23.8/30 fps, all 4 cores saturated → HEVC at 2K is out
+    of software reach (x265 ultrafast ≈ 19.4 MP/s per A76 core).
+  - 2K30 x264 alone: 29.98 fps at ~40 % of the SoC (x264 ≈ 4-5x cheaper).
+  - 2K x264 + Low x265 + MOG2: 29.98 fps at 54 % — validated headroom.
 
-The x264 leg keeps rtsp://…/camera alive so the existing HomeKit service
-(live passthrough + HKSV HDS recording) works unchanged for legacy
-controllers — in HEVC mode picamera2 does no encoding at all.
+    raw 2K YUV ─► split ─┬─► x264 High  (2304x1296@30)  ─► rtsp …/camera_high
+                         ├─► x264 Low   (640x360@15)    ─► rtsp …/camera_low
+                         └─► x264 legacy (camera.width/height) ─► rtsp …/camera
+
+The Medium tier (1080p30) is DISABLED here by default: it is the legacy
+/camera stream itself — the WebRTC layer maps its medium source to the same
+RTSP path, reusing that encode for zero extra CPU. The x264 legacy leg keeps
+the existing HomeKit service (live passthrough + HKSV HDS recording) working
+unchanged for legacy controllers — in this mode picamera2 does no encoding
+at all. Whether the new-spec hub accepts an H.264 2K tier is the tvOS 27
+probe's question; per-tier `codec: h265` stays available for the answer.
 
 Process lifecycle (spawn, exponential backoff, drain-while-down, FIONREAD
 stall kill) is inherited from RtspPublisher — only the command differs.
@@ -24,19 +34,22 @@ from .rtsp_publisher import RtspPublisher
 
 logger = logging.getLogger(__name__)
 
-# Spec target bitrates (§2, bits per second) as defaults; config overrides.
+# Defaults per the measured capacity map; config overrides. Bitrates in b/s.
+# High is H.264 at ~1.6x the spec's HEVC target (H.264 needs more bits for
+# the same quality; the LAN doesn't care). Geometry = IMX708 native binned.
 _TIER_DEFAULTS = {
-    "high": {"width": 2560, "height": 1440, "fps": 30,
-             "bitrate": 2_800_000, "max_bitrate": 3_000_000},
-    "medium": {"width": 1920, "height": 1080, "fps": 30,
-               "bitrate": 1_700_000, "max_bitrate": 1_800_000},
-    "low": {"width": 640, "height": 360, "fps": 15,
-            "bitrate": 180_000, "max_bitrate": 190_000},
+    "high": {"enabled": True, "codec": "h264", "width": 2304, "height": 1296,
+             "fps": 30, "bitrate": 4_500_000, "max_bitrate": 5_000_000},
+    "medium": {"enabled": False, "codec": "h264", "width": 1920, "height": 1080,
+               "fps": 30, "bitrate": 1_700_000, "max_bitrate": 1_800_000},
+    "low": {"enabled": True, "codec": "h264", "width": 640, "height": 360,
+            "fps": 15, "bitrate": 180_000, "max_bitrate": 190_000},
 }
+_INT_TIER_KEYS = ("width", "height", "fps", "bitrate", "max_bitrate")
 
 
 class HevcPublisher(RtspPublisher):
-    """RtspPublisher with the raw-input, four-output ffmpeg command."""
+    """RtspPublisher with the raw-input, multi-output ffmpeg command."""
 
     def __init__(self, pipe_r_fd: int, rtsp_base_url: str, info: dict):
         # rtsp_base_url = "rtsp://localhost:8554" (no path) — paths are fixed.
@@ -70,24 +83,41 @@ class HevcPublisher(RtspPublisher):
 
     def _tier(self, name: str) -> dict:
         merged = dict(_TIER_DEFAULTS[name])
-        merged.update({k: int(v) for k, v in (self._info["tiers"].get(name) or {}).items()})
+        for k, v in (self._info["tiers"].get(name) or {}).items():
+            merged[k] = int(v) if k in _INT_TIER_KEYS else v
         return merged
 
     # -- command -----------------------------------------------------------
 
-    def _x265_leg(self, pad: str, tier: dict, path: str) -> list[str]:
+    def _encode_leg(self, pad: str, tier: dict, path: str) -> list[str]:
+        """One output leg — x264 or x265 per the tier's codec, same 1 s GOP,
+        scene-cut off, zerolatency (no B-frames: wallclock stamping + HKSV
+        passthrough need display-order frames)."""
         gop = int(tier["fps"])
+        codec = str(tier.get("codec", "h264")).lower()
+        if codec in ("h265", "hevc", "x265"):
+            codec_args = [
+                "-c:v", "libx265",
+                "-preset", str(self._info.get("preset", "ultrafast")),
+                "-tune", "zerolatency",
+                "-x265-params", f"keyint={gop}:min-keyint={gop}:scenecut=0",
+            ]
+        else:
+            # superfast mirrors what picamera2's libav encoder picks for
+            # profile "high" (Volet 1).
+            codec_args = [
+                "-c:v", "libx264",
+                "-preset", "superfast",
+                "-tune", "zerolatency",
+                "-profile:v", "high",
+                "-g", str(gop), "-sc_threshold", "0",
+            ]
         return [
             "-map", f"[{pad}]",
-            "-c:v", "libx265",
-            "-preset", str(self._info.get("preset", "ultrafast")),
-            "-tune", "zerolatency",  # no B-frames: wallclock stamping + HKSV
+            *codec_args,
             "-b:v", str(tier["bitrate"]),
             "-maxrate", str(tier["max_bitrate"]),
             "-bufsize", str(tier["max_bitrate"]),
-            # 1 s GOP, no scene-cut keyframes: same latency/fragment trade-off
-            # as the classic pipeline's iperiod=fps.
-            "-x265-params", f"keyint={gop}:min-keyint={gop}:scenecut=0",
             "-rtsp_transport", "tcp",
             "-f", "rtsp", f"{self._base_url}/{path}",
         ]
@@ -96,17 +126,36 @@ class HevcPublisher(RtspPublisher):
         w, h = int(self._info["width"]), int(self._info["height"])
         fps = int(self._info["fps"])
         stride, padded_h, crop = self._padded_geometry()
-        high, medium, low = (self._tier(n) for n in ("high", "medium", "low"))
         legacy = self._info["legacy"]
+
+        # Enabled tiers, in ladder order. Medium is off by default — the
+        # legacy 1080p x264 stream doubles as the Medium source (mapped in
+        # the WebRTC layer), costing zero extra encode.
+        tiers = {n: self._tier(n) for n in ("high", "medium", "low")}
+        active = [n for n, t in tiers.items() if t.get("enabled", True)]
+        pads = {"high": "hi", "medium": "mid", "low": "lo"}
 
         src = "[0:v]"
         graph = []
         if crop:
             graph.append(f"{src}crop={w}:{h}:0:0[vis]")
             src = "[vis]"
-        graph.append(f"{src}split=4[hi][mid][lo][leg]")
-        graph.append(f"[mid]scale={medium['width']}:{medium['height']}[mid2]")
-        graph.append(f"[lo]scale={low['width']}:{low['height']},fps={low['fps']}[lo2]")
+        split_pads = "".join(f"[{pads[n]}]" for n in active) + "[leg]"
+        graph.append(f"{src}split={len(active) + 1}{split_pads}")
+        out_pads = {}
+        for name in active:
+            t = tiers[name]
+            pad = pads[name]
+            filters = []
+            if (t["width"], t["height"]) != (w, h):
+                filters.append(f"scale={t['width']}:{t['height']}")
+            if t["fps"] != fps:
+                filters.append(f"fps={t['fps']}")
+            if filters:
+                graph.append(f"[{pad}]{','.join(filters)}[{pad}2]")
+                out_pads[name] = f"{pad}2"
+            else:
+                out_pads[name] = pad
         graph.append(f"[leg]scale={legacy['width']}:{legacy['height']}[leg2]")
 
         args = [
@@ -121,21 +170,14 @@ class HevcPublisher(RtspPublisher):
             "-i", f"pipe:{self._pipe_r_fd}",
             "-filter_complex", ";".join(graph),
         ]
-        args += self._x265_leg("hi", high, "camera_hevc_high")
-        args += self._x265_leg("mid2", medium, "camera_hevc_medium")
-        args += self._x265_leg("lo2", low, "camera_hevc_low")
-        # Legacy x264 leg — feeds the unchanged HomeKit passthrough path.
-        # superfast mirrors what picamera2's libav encoder picks for
-        # profile "high" (Volet 1), zerolatency keeps display-order frames.
-        args += [
-            "-map", "[leg2]",
-            "-c:v", "libx264",
-            "-preset", "superfast",
-            "-tune", "zerolatency",
-            "-profile:v", "high",
-            "-b:v", str(int(legacy["bitrate"])),
-            "-g", str(fps), "-sc_threshold", "0",
-            "-rtsp_transport", "tcp",
-            "-f", "rtsp", f"{self._base_url}/camera",
-        ]
+        for name in active:
+            args += self._encode_leg(out_pads[name], tiers[name], f"camera_{name}")
+        # Legacy leg — feeds the unchanged HomeKit passthrough path (and the
+        # Medium tier by reuse).
+        legacy_tier = {
+            "codec": "h264", "fps": fps,
+            "bitrate": int(legacy["bitrate"]),
+            "max_bitrate": int(legacy["bitrate"]),
+        }
+        args += self._encode_leg("leg2", legacy_tier, "camera")
         return args

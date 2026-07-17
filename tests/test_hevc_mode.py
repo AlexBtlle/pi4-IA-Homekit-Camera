@@ -20,9 +20,11 @@ def test_hevc_mode_captures_main_at_high_tier_size():
     assert (mgr._legacy_width, mgr._legacy_height) == (1920, 1080)
 
 
-def test_hevc_defaults_to_2560x1440():
+def test_hevc_defaults_to_native_binned_2304x1296():
+    # IMX708 native binned — the spec allows approximate resolutions and an
+    # ISP upscale to 2560x1440 would cost +23 % of encode pixels for nothing.
     mgr = _mgr(hevc={"enabled": True})
-    assert (mgr._width, mgr._height) == (2560, 1440)
+    assert (mgr._width, mgr._height) == (2304, 1296)
 
 
 def test_disabled_or_absent_hevc_changes_nothing():

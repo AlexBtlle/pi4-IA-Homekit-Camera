@@ -47,7 +47,7 @@ function makeWiring() {
     videoTiersPayload: buildVideoStreamTiers(VideoCodec.H265, 96, defaultTiers2K()),
     audioTiersPayload: buildAudioStreamTiers(97),
     sensorUuid: Buffer.alloc(16, 0x42),
-    defaultSrc: "camera_hevc_high",
+    defaultSrc: "camera_high",
   });
   return { engine, wiring };
 }
@@ -76,7 +76,7 @@ describe("WebRTCManagementWiring", () => {
     expect(tlvGet(resp, 1)).toHaveLength(16);
     expect(tlvGet(resp, 2)!.toString()).toBe("v=0 the-offer");
     expect(tlvGet(resp, 4)![0]).toBe(SolicitOfferStatus.Success);
-    expect(engine.srcs).toEqual(["camera_hevc_high"]);
+    expect(engine.srcs).toEqual(["camera_high"]);
   });
 
   test("full happy path: solicit → answer → end, count follows", async () => {

@@ -205,9 +205,12 @@ class CameraManager:
         self._hevc_enabled = bool(self._hevc_cfg.get("enabled", False))
         self._legacy_width, self._legacy_height = self._width, self._height
         if self._hevc_enabled:
+            # Default High geometry = IMX708 native binned (2304x1296): the
+            # spec allows approximate resolutions and upscaling to a strict
+            # 2560x1440 would cost +23 % of encode pixels for no real detail.
             _high = dict(self._hevc_cfg.get("high") or {})
-            self._width = int(_high.get("width", 2560))
-            self._height = int(_high.get("height", 1440))
+            self._width = int(_high.get("width", 2304))
+            self._height = int(_high.get("height", 1296))
         self._hevc_stream_info: dict | None = None
         self._hevc_keyframe_noted = False
 
