@@ -87,7 +87,15 @@ import {
   VideoCodec,
   WebRTCStreamingStatus,
 } from "./spec";
-import { decodeTlv8, encodeTlv8, hexDump, uint8, utf8 } from "./tlv8";
+import {
+  decodeTlv8,
+  encodeTlv8,
+  hexDump,
+  tlvGet,
+  uint16,
+  uint8,
+  utf8,
+} from "./tlv8";
 
 const PROBE_DIR = path.resolve("probe-persist");
 const PINCODE = "031-45-154"; // throwaway probe — never the production PIN
@@ -412,19 +420,68 @@ function main(): void {
       return encodeTlv8([{ type: 2, data: uint8(0) }]).toString("base64");
     })
     .updateValue(encodeTlv8([{ type: 2, data: uint8(0) }]).toString("base64"));
-  rtp
-    .getCharacteristic(Characteristic.SetupEndpoints)!
-    .onSet((value) => {
-      log("WRITE", "Setup Endpoints (multi-tier)", describeTlv(fromB64(value)));
-      // Observation only: echo the write so a follow-up read isn't empty.
-      return value as string;
-    });
+  // §3.6 field finding (session №4): the ATV writes Setup Endpoints with the
+  // SAME TLV shape as legacy R17 — {1: session id, 3: controller address
+  // {1: ip version, 2: ip, 3: video port, 4: audio port}, 4/5: video/audio
+  // SRTP params} — and RETRIES until the accessory answers properly. The
+  // response is served on the follow-up READ (not write-response): {1: id,
+  // 2: status, 3: accessory address, 4/5: echoed SRTP params, 6/7: SSRCs}.
+  const setupChar = rtp.getCharacteristic(Characteristic.SetupEndpoints)!;
+  setupChar.onSet((value) => {
+    const raw = fromB64(value);
+    const entries = safeDecode(raw);
+    const sid = tlvGet(entries, 1) ?? Buffer.alloc(0);
+    const addr = safeDecode(tlvGet(entries, 3) ?? Buffer.alloc(0));
+    const ctrlIp = tlvGet(addr, 2)?.toString("utf8") ?? "?";
+    const vPort = tlvGet(addr, 3)?.readUInt16LE() ?? 0;
+    const aPort = tlvGet(addr, 4)?.readUInt16LE() ?? 0;
+    log(
+      "WRITE",
+      "Setup Endpoints (multi-tier)",
+      `session ${sid.toString("hex").slice(0, 8)}… controller ${ctrlIp} ` +
+        `video:${vPort} audio:${aPort}`,
+    );
+    const accessoryAddress = encodeTlv8([
+      { type: 1, data: uint8(0) }, // IPv4
+      { type: 2, data: utf8(ip) },
+      { type: 3, data: uint16(50000) }, // probe: declared, nothing bound
+      { type: 4, data: uint16(50002) },
+    ]);
+    const response = encodeTlv8([
+      { type: 1, data: sid },
+      { type: 2, data: uint8(0) }, // status: success
+      { type: 3, data: accessoryAddress },
+      { type: 4, data: tlvGet(entries, 4) ?? Buffer.alloc(0) }, // echo SRTP
+      { type: 5, data: tlvGet(entries, 5) ?? Buffer.alloc(0) },
+      { type: 6, data: crypto.randomBytes(4) }, // video SSRC
+      { type: 7, data: crypto.randomBytes(4) }, // audio SSRC
+    ]);
+    // Served on the controller's follow-up read.
+    setupChar.updateValue(response.toString("base64"));
+    log("RESP", "Setup Endpoints (multi-tier)", "accessory address + SSRCs staged");
+  });
+  setupChar.onGet(() => {
+    log("READ", "Setup Endpoints (multi-tier)", "→ staged response");
+    return (setupChar.value as string) ?? "";
+  });
   rtp
     .getCharacteristic(RtpStreamingControlCharacteristic)!
     .onSet((value) => {
       const raw = fromB64(value);
-      const sid = safeDecode(raw).find((e) => e.type === 1)?.data;
-      log("WRITE", "RTP Streaming Control", describeTlv(raw));
+      const entries = safeDecode(raw);
+      const sid = tlvGet(entries, 1);
+      const command = tlvGet(entries, 2)?.[0];
+      // §4.16: Start carries the SELECTED tier ids + SSRCs — the tier-
+      // selection data this whole probe campaign is after. Log it all.
+      const videoTier = tlvGet(entries, 3)?.readUInt32LE();
+      const audioTier = tlvGet(entries, 5)?.readUInt32LE();
+      log(
+        "WRITE",
+        "RTP Streaming Control",
+        `command=${command === 2 ? "START" : command === 1 ? "END" : command} ` +
+          `videoTier=${videoTier ?? "-"} audioTier=${audioTier ?? "-"} | ` +
+          describeTlv(raw),
+      );
       return encodeTlv8([
         { type: 1, data: sid ?? Buffer.alloc(0) },
         { type: 2, data: uint8(0) }, // Status: Success
