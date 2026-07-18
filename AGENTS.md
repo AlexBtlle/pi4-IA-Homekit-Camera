@@ -52,7 +52,15 @@ Le projet vise en priorité le **Pi Zero 2 W** ; ses contraintes s'appliquent
   (load 7+). Déjà rencontré, déjà corrigé — ne pas réintroduire.
 - Pi Zero W v1 (ARMv6) : expérience close, documentée dans TROUBLESHOOTING —
   pas de support officiel, ne pas rouvrir.
-- Pi 5 : pas d'encodeur vidéo matériel — analyse et plan dans l'issue #59.
+- Pi 5 : chantier 2K/4K **clos** (#59, 2026-07) — décision produit (prix,
+  thermique, encombrement), pas un échec technique. Acquis mesurés : pas
+  d'encodeur vidéo matériel ; x265 logiciel ≈ 19,4 MP/s par cœur A76 → le
+  2K HEVC est hors de portée, le 2K30 H.264 logiciel tient (~40 % du SoC) ;
+  le protocole live de la nouvelle spec HKSV (tvOS 27) est intégralement
+  cartographié dans l'issue (RTP/SRTP multi-palier, Setup Endpoints en
+  write-response, SSRC assignés par le contrôleur, entiers TLV en longueur
+  minimale). Code du spike archivé sur la branche `archive/pi5-hksv-spike`.
+  Ne pas rouvrir sans nouveau matériel ou demande explicite.
 
 ## Architecture
 
