@@ -1,0 +1,15 @@
+[Unit]
+Description=pi4cam — release the IR-CUT override GPIO to the camera module's own auto-switch
+# Run before the camera pipeline starts: a forced-day GPIO doesn't break
+# pi4cam, but a night scene stuck behind the IR filter looks wrong from
+# the first frame if this races with the camera warming up.
+Before=pi4cam.service
+
+[Service]
+Type=oneshot
+# GPIO number: field-tested at BCM17 on a Waveshare IMX219-160 IR-CUT — set
+# to whatever pin your module's IR-CUT control line is actually wired to.
+ExecStart=/usr/bin/python3 /opt/pi4cam/scripts/ircut_release_gpio.py --gpio 17
+
+[Install]
+WantedBy=multi-user.target
