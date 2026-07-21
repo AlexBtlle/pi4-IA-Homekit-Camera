@@ -7,9 +7,12 @@ Before=pi4cam.service
 
 [Service]
 Type=oneshot
+# EDIT BOTH before enabling — install.sh does NOT deploy scripts/ to
+# /opt/pi4cam (unlike camera/ or homekit/src), so this must point at your
+# actual git checkout, e.g. /home/pi/pi4-IA-Homekit-Camera/scripts/... .
 # GPIO number: field-tested at BCM17 on a Waveshare IMX219-160 IR-CUT — set
 # to whatever pin your module's IR-CUT control line is actually wired to.
-ExecStart=/usr/bin/python3 /opt/pi4cam/scripts/ircut_release_gpio.py --gpio 17
+ExecStart=/usr/bin/python3 /home/pi/pi4-IA-Homekit-Camera/scripts/ircut_release_gpio.py --gpio 17
 
 [Install]
 WantedBy=multi-user.target
