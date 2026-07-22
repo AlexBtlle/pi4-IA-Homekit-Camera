@@ -16,6 +16,14 @@ logger = logging.getLogger(__name__)
 # config so the camera and HomeKit services always agree on the same path.
 DEFAULT_SNAPSHOT_PATH = "/dev/shm/pi4cam-snapshot.jpg"
 
+# Write-only telemetry: the AEC's Lux estimate, refreshed a few times a
+# minute, for external consumers that need scene illuminance without opening
+# the camera (which pi4cam holds). Notably scripts/ircut_release_gpio.py
+# --watch — the standalone IR-CUT day/night daemon — reads this. Emitting it
+# is NOT the feature: no thresholds, no filter logic here, just the raw
+# number. tmpfs so it never touches the SD card.
+DEFAULT_LUX_PATH = "/dev/shm/pi4cam-lux"
+
 
 class CameraManager:
     """
@@ -124,6 +132,10 @@ class CameraManager:
         self._lores_h = int(self._cfg.get("lores_height", 240))
         self._snapshot_interval = float(self._cfg.get("snapshot_interval", 2))
         self._snapshot_path = str(self._cfg.get("snapshot_path", DEFAULT_SNAPSHOT_PATH))
+        # Lux telemetry (see DEFAULT_LUX_PATH): best-effort, ~1 write / 2 s.
+        self._lux_path = str(self._cfg.get("lux_path", DEFAULT_LUX_PATH))
+        self._last_lux_publish = 0.0
+        self._lux_publish_interval = 2.0
         self._full_fov = bool(self._cfg.get("full_fov", True))
         self._sharpness = float(self._cfg.get("sharpness", 1.0))
         self._contrast = float(self._cfg.get("contrast", 1.0))
@@ -458,6 +470,34 @@ class CameraManager:
         except Exception:
             logger.warning("Night camera control rejected", exc_info=True)
 
+    def _publish_lux(self, request) -> None:
+        """Write the AEC's Lux estimate to self._lux_path as telemetry.
+
+        Best-effort and self-throttled: a torn read is prevented by writing a
+        temp file and os.replace()-ing it (atomic on the same tmpfs). Never
+        raises into the capture callback — telemetry must not risk the stream.
+        No thresholds or filter logic live here by design (the IR-CUT daemon
+        owns those); this only exposes the raw number a standalone consumer
+        cannot otherwise get without opening the camera pi4cam already holds.
+        """
+        now = time.monotonic()
+        if now - self._last_lux_publish < self._lux_publish_interval:
+            return
+        self._last_lux_publish = now
+        try:
+            lux = float(request.get_metadata().get("Lux", -1.0))
+        except Exception:
+            return  # metadata unavailable — telemetry is best-effort
+        if lux < 0.0:
+            return  # this tuning doesn't report Lux
+        try:
+            tmp = self._lux_path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(f"{lux:.1f}\n")
+            os.replace(tmp, self._lux_path)
+        except OSError:
+            pass  # /dev/shm unavailable — never block capture over telemetry
+
     def _update_day_lift(self, request) -> None:
         """Auto day/colour brightening (#52): latch the gamma lift on while the
         scene is dim, off in bright light, with value hysteresis.
@@ -599,6 +639,11 @@ class CameraManager:
         """Called by picamera2's capture thread on every frame. Must be fast."""
         now = time.monotonic()
         self._last_frame_time = now  # always update for the watchdog
+
+        # Expose the Lux estimate as telemetry (self-throttled, independent of
+        # every mode below) — an external consumer, not this program, owns any
+        # day/night logic built on it (#IR-CUT daemon).
+        self._publish_lux(request)
 
         # Detector frames, throttled to analysis_fps. The IR check reads the
         # lores chroma planes here, BEFORE any neutralisation below, so night
