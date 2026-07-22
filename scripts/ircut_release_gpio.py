@@ -44,6 +44,17 @@ field-calibrate: watch `journalctl -u pi4cam-ircut-release -f` — the daemon
 logs the live Lux and state — and set them from real dusk/night readings on
 your rig. Dusk is the tricky moment (retracting the filter too early tints
 the still-lit scene pink).
+
+CRITICAL — the feedback trap (field-learned): the measured Lux DEPENDS on the
+filter position. With the filter engaged the IR is blocked (a dusk scene read
+~7 lux); retract it and the IR — plus the module's own IR LEDs — reaches the
+sensor, so the SAME scene reads much higher (~27 lux). If --day-above sits
+below that IR-lit reading, the daemon oscillates: dark → retract filter → Lux
+jumps above day_above → re-engage → Lux drops → retract → … clignote forever.
+So --day-above MUST be set ABOVE the Lux the scene reads at night with the
+filter OUT (measure it — the daemon logs it). Field example: filter-in dusk
+≈ 7 lux, filter-out IR-lit ≈ 27 lux → day_above 45 keeps night stable while a
+real dawn (visible light, well past 45) still flips cleanly back to day.
 """
 import argparse
 import os
@@ -219,8 +230,11 @@ def main() -> None:
                      help=f"Telemetry file pi4cam writes (default {DEFAULT_LUX_PATH}).")
     grp.add_argument("--night-below", type=float, default=8.0,
                      help="Enter night below this Lux (default 8 — a starting point).")
-    grp.add_argument("--day-above", type=float, default=25.0,
-                     help="Enter day above this Lux (default 25 — a starting point).")
+    grp.add_argument("--day-above", type=float, default=45.0,
+                     help="Enter day above this Lux (default 45). MUST exceed the "
+                          "Lux the scene reads at night with the filter OUT "
+                          "(IR LEDs on) or the filter oscillates — see the "
+                          "feedback-trap note in the module docstring.")
     grp.add_argument("--samples", type=int, default=4,
                      help="Consecutive confirming readings before flipping (default 4).")
     grp.add_argument("--interval", type=float, default=15.0,

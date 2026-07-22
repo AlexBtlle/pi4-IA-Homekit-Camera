@@ -11,9 +11,12 @@ Type=simple
 # camera/ or homekit/src), so point this at your actual git checkout.
 # EDIT --gpio to the pin your module's IR-CUT control line is wired to
 # (field-tested BCM17). --night-below / --day-above are Lux STARTING POINTS:
-# calibrate from `journalctl -u pi4cam-ircut-release -f`.
+# calibrate from `journalctl -u pi4cam-ircut-release -f`. --day-above MUST
+# exceed the Lux the scene reads at NIGHT with the filter out (IR LEDs on) or
+# the filter oscillates — field-measured ~27, hence 45 (see the script's
+# feedback-trap note).
 ExecStart=/usr/bin/python3 /home/pi/pi4-IA-Homekit-Camera/scripts/ircut_release_gpio.py \
-    --gpio 17 --watch --night-below 8 --day-above 25
+    --gpio 17 --watch --night-below 15 --day-above 45
 Restart=on-failure
 RestartSec=5
 
