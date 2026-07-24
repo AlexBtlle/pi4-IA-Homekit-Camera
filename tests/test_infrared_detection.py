@@ -384,9 +384,8 @@ def _day_lift_manager(day_gamma=2.2):
 
 def _feed_lux(cam, lux, frames):
     md = {} if lux is None else {"Lux": lux}
-    req = types.SimpleNamespace(get_metadata=lambda: md)
     for _ in range(frames):
-        cam._update_day_lift(req)
+        cam._update_day_lift(md)
 
 
 def test_day_lift_engages_only_after_the_streak_when_scene_is_dim():
