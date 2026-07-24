@@ -9,6 +9,9 @@ import yaml from "js-yaml";
 export interface AppConfig {
   cameraName: string;
   rtspUrl: string;
+  /** The bare rtsp.port (already baked into rtspUrl) — for consumers that
+   *  probe the port itself, like the status page's mediamtx check. */
+  rtspPort: number;
   motionPort: number;
   motionTimeout: number;
   width: number;
@@ -97,6 +100,7 @@ export function loadConfig(): AppConfig {
   return {
     cameraName: String(homekit.camera_name ?? "Pi Camera"),
     rtspUrl: `rtsp://127.0.0.1:${rtspPort}/camera`,
+    rtspPort,
     motionPort: Number(homekit.motion_port ?? 8989),
     motionTimeout: Number(homekit.motion_timeout ?? 10),
     width: Number(camera.width ?? 1920),

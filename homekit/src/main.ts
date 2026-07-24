@@ -220,6 +220,7 @@ function main(): void {
     config.snapshotPath,
     motion,
     recordingDelegate,
+    config.rtspPort,
   ).start();
 
   motion.start();

@@ -11,6 +11,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/main.js",
+    "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },

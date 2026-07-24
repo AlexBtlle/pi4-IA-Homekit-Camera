@@ -80,10 +80,15 @@ export class RecordingDelegate implements CameraRecordingDelegate {
   ): AsyncGenerator<RecordingPacket> {
     const prebufferMs = this.configuration?.prebufferLength ?? 4000;
     const ac = new AbortController();
+    // Named handler so the finally below can detach it: {once: true} only
+    // fires-and-forgets on ABORT — a stream that ends normally would leave
+    // the listener attached to the HAP session's signal forever (leak, one
+    // per recording). Same listener-lifecycle care as prebuffer.getInit().
+    const onAbort = () => ac.abort();
     if (signal?.aborted) {
       ac.abort();
     } else {
-      signal?.addEventListener("abort", () => ac.abort(), { once: true });
+      signal?.addEventListener("abort", onAbort, { once: true });
     }
     this.streams.set(streamId, ac);
     const motionAge = this.motionAgeProvider?.();
@@ -102,6 +107,7 @@ export class RecordingDelegate implements CameraRecordingDelegate {
         yield { data, isLast: false };
       }
     } finally {
+      signal?.removeEventListener("abort", onAbort);
       this.streams.delete(streamId);
       console.log(`[hksv] stream ${streamId} ended`);
     }
