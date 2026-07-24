@@ -189,8 +189,12 @@ fi
 info "Deploying project files to ${INSTALL_DIR}..."
 mkdir -p "${INSTALL_DIR}"/{camera,homekit}
 
-# Python sources (the camera pipeline + detection)
-cp -r "${SRC_DIR}/camera/." "${INSTALL_DIR}/camera/"
+# Python sources (the camera pipeline + detection). Sources only: a plain
+# `cp -r camera/.` also ships __pycache__, and a checkout that once held a
+# now-deleted module keeps its stale .pyc there — which would land in
+# /opt/pi4cam as dead code. Copy the .py files, drop any bytecode.
+find "${SRC_DIR}/camera" -maxdepth 1 -name '*.py' -exec cp {} "${INSTALL_DIR}/camera/" \;
+rm -rf "${INSTALL_DIR}/camera/__pycache__"
 
 # HomeKit app sources (build happens in step 8, below). Copy package files and
 # the TypeScript sources; node_modules/dist/pairing.json are produced on-box.

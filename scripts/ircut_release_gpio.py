@@ -15,11 +15,15 @@ Field-tested polarity (confirm on yours — the vendor wiki had it backwards):
 
 Day/night is decided from scene illuminance. This script CANNOT read the
 camera's AEC Lux itself (pi4cam holds the sensor — it can't be opened twice),
-so pi4cam publishes its Lux estimate as telemetry to /dev/shm/pi4cam-lux and
---watch reads that. True AEC Lux (not raw image brightness) is what makes the
-decision robust: at night the sensor runs shutter+gain wide open, so an
-IR-lit scene that LOOKS bright still reports a low Lux — no oscillation once
-the LEDs come on.
+so pi4cam publishes its Lux estimate as telemetry and --watch reads that. True
+AEC Lux (not raw image brightness) is what makes the decision robust: at night
+the sensor runs shutter+gain wide open, so an IR-lit scene that LOOKS bright
+still reports a low Lux — no oscillation once the LEDs come on.
+
+>>> REQUIRED FIRST: that telemetry is OPT-IN. Set `camera.lux_path` in
+>>> /opt/pi4cam/config.yaml (suggested: /dev/shm/pi4cam-lux) and restart
+>>> pi4cam, otherwise the file never appears and --watch just holds day mode
+>>> while logging "no fresh Lux".
 
 This stays fully DECOUPLED from the main program: pi4cam only writes a number,
 all thresholds / hysteresis / GPIO logic live here. Nothing imports this file;
@@ -227,7 +231,10 @@ def main() -> None:
 
     grp = parser.add_argument_group("watch tuning (Lux — field-calibrate)")
     grp.add_argument("--lux-path", default=DEFAULT_LUX_PATH,
-                     help=f"Telemetry file pi4cam writes (default {DEFAULT_LUX_PATH}).")
+                     help=f"Telemetry file pi4cam writes (default "
+                          f"{DEFAULT_LUX_PATH}). pi4cam only writes it when "
+                          f"`camera.lux_path` is set in its config — it is "
+                          f"opt-in and empty by default.")
     grp.add_argument("--night-below", type=float, default=8.0,
                      help="Enter night below this Lux (default 8 — a starting point).")
     grp.add_argument("--day-above", type=float, default=45.0,

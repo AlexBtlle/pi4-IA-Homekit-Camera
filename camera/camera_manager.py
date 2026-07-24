@@ -22,7 +22,10 @@ DEFAULT_SNAPSHOT_PATH = "/dev/shm/pi4cam-snapshot.jpg"
 # --watch — the standalone IR-CUT day/night daemon — reads this. Emitting it
 # is NOT the feature: no thresholds, no filter logic here, just the raw
 # number. tmpfs so it never touches the SD card.
-DEFAULT_LUX_PATH = "/dev/shm/pi4cam-lux"
+#
+# OPT-IN: `camera.lux_path` ships empty, so an install with no IR-CUT hardware
+# writes nothing at all. Suggested value when a consumer needs it:
+SUGGESTED_LUX_PATH = "/dev/shm/pi4cam-lux"
 
 
 class CameraManager:
@@ -132,8 +135,10 @@ class CameraManager:
         self._lores_h = int(self._cfg.get("lores_height", 240))
         self._snapshot_interval = float(self._cfg.get("snapshot_interval", 2))
         self._snapshot_path = str(self._cfg.get("snapshot_path", DEFAULT_SNAPSHOT_PATH))
-        # Lux telemetry (see DEFAULT_LUX_PATH): best-effort, ~1 write / 2 s.
-        self._lux_path = str(self._cfg.get("lux_path", DEFAULT_LUX_PATH))
+        # Lux telemetry (see SUGGESTED_LUX_PATH): OPT-IN — empty path disables
+        # it entirely, so an install with no consumer writes nothing at all.
+        # Best-effort, ~1 write / 2 s when enabled.
+        self._lux_path = str(self._cfg.get("lux_path", "") or "").strip()
         self._last_lux_publish = 0.0
         self._lux_publish_interval = 2.0
         self._full_fov = bool(self._cfg.get("full_fov", True))
@@ -473,6 +478,10 @@ class CameraManager:
     def _publish_lux(self, request) -> None:
         """Write the AEC's Lux estimate to self._lux_path as telemetry.
 
+        OPT-IN: does nothing unless `camera.lux_path` is set — the check comes
+        first, so an install without a consumer pays nothing per frame (not
+        even a metadata fetch).
+
         Best-effort and self-throttled: a torn read is prevented by writing a
         temp file and os.replace()-ing it (atomic on the same tmpfs). Never
         raises into the capture callback — telemetry must not risk the stream.
@@ -480,6 +489,8 @@ class CameraManager:
         owns those); this only exposes the raw number a standalone consumer
         cannot otherwise get without opening the camera pi4cam already holds.
         """
+        if not self._lux_path:
+            return
         now = time.monotonic()
         if now - self._last_lux_publish < self._lux_publish_interval:
             return

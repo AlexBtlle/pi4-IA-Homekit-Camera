@@ -66,6 +66,13 @@ camera:
                           # rewrites off the SD card to avoid wear. Both the camera and
                           # HomeKit services must agree on this path. Override only if
                           # /dev/shm is unavailable (then point to another tmpfs).
+  lux_path: ""            # OFF when empty. Set to /dev/shm/pi4cam-lux to publish the
+                          # AEC's scene-illuminance estimate (~1 write / 2 s, tmpfs)
+                          # for an external consumer — nothing in pi4cam reads it back.
+                          # Only needed by the standalone hardware IR-CUT day/night
+                          # daemon (scripts/ircut_release_gpio.py --watch), which can't
+                          # measure Lux itself while pi4cam holds the camera. See the
+                          # "Hardware IR-CUT filter" section of TROUBLESHOOTING.md.
   full_fov: true          # use the full sensor (full lens angle); false = native cropped 1080p
   sharpness: 1.0          # ISP sharpness 0.0–16.0 (1.0 = default; try 1.5–2.0 for crisper edges)
   contrast: 1.0           # ISP contrast  0.0–32.0 (1.0 = default)
@@ -90,7 +97,7 @@ camera:
                           # dark lengthens the exposure instead (10 → up to 3× more light, NO added
                           # noise). Cost: lower night fps (motion blur) + longer keyframe interval.
                           # Lower = brighter/slower; set to >= fps (e.g. 30) to disable.
-  ir_exposure: 1.0        # [BETA] secondary fine-tune: ExposureValue bias in EV/stops applied only
+  ir_exposure: 0.0        # [BETA] secondary fine-tune: ExposureValue bias in EV/stops applied only
                           # at night (+1 = 2× target). Only bites once ir_min_fps has freed shutter
                           # headroom — on its own at 30 fps it saturates with no visible effect.
                           # Useful range 0.0–2.0. 0 = off.
