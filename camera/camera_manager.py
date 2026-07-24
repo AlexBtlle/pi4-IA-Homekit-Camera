@@ -59,10 +59,11 @@ class CameraManager:
     # (grey-world) averages this far from neutral: an extreme mean offset is
     # conclusive on its own — no uniformity required.
     IR_CAST_STRONG = 20.0     # |mean − 128| beyond which IR is certain, any std
-    # Hysteresis, counted in analysed lores frames (analysis_fps per second).
+    # Hysteresis, counted in analysed lores frames — so the wall-clock delay
+    # scales with detection.analysis_fps (shipped default 10; Zero 2 W preset 5).
     # Exit is slower than entry so car headlights at night can't flip us back.
-    IR_ENTRY_FRAMES = 15      # ≈3 s at 5 fps before switching to grayscale
-    IR_EXIT_FRAMES = 50       # ≈10 s at 5 fps before returning to colour
+    IR_ENTRY_FRAMES = 15      # ≈1.5 s at 10 fps (3 s at 5) before grayscale
+    IR_EXIT_FRAMES = 50       # ≈5 s at 10 fps (10 s at 5) before colour returns
     # Day-lift auto trigger (#52), on the AEC's Lux estimate. Lux, not analogue
     # gain: the sensor's AnalogueGain max reads as the *hardware* max (63.9x on
     # OV5647) while the AEC operationally tops out ~8x, so a gain fraction never
@@ -250,9 +251,10 @@ class CameraManager:
                 "Sharpness": self._sharpness,
                 "Contrast": self._contrast,
                 "Saturation": self._saturation,
-                # ExposureValue starts at libcamera's 0.0 default: the day-EV
-                # auto-lift (#52) engages it only once the scene proves dim,
-                # and night mode drives it via ir_exposure.
+                # ExposureValue stays at libcamera's 0.0 default by day: the
+                # EV route was tried for the dim-day lift (#52) and proved
+                # inert (the AEC ignores the bias), so day brightening is a
+                # pixel LUT instead. Only night touches EV, via ir_exposure.
             },
         )
 
@@ -431,10 +433,10 @@ class CameraManager:
           and it adds no gain-noise. Paired with AeExposureMode=Long so the AEC
           spends that budget on shutter time before analogue gain.
         - ExposureValue: bias the AE target up at night (only useful once the
-          relaxed shutter ceiling gives the AEC room to reach it). The day-EV
-          auto-lift (#52) owns this control by day; night takes it over and the
-          detector is reset on the flip back, so a dim-day lift can never leak
-          into night and re-evaluates from scratch once colour returns.
+          relaxed shutter ceiling gives the AEC room to reach it). Night is
+          the ONLY owner of this control — the day-lift (#52) is a pixel LUT,
+          its EV approach having proved inert — so reverting to 0.0 by day
+          returns the control to libcamera's default, nothing else.
 
         Each knob is skipped when its config leaves it at the daylight default,
         so a plain install is untouched. None-guarded and wrapped so a rejected
@@ -651,9 +653,10 @@ class CameraManager:
         now = time.monotonic()
         self._last_frame_time = now  # always update for the watchdog
 
-        # Expose the Lux estimate as telemetry (self-throttled, independent of
-        # every mode below) — an external consumer, not this program, owns any
-        # day/night logic built on it (#IR-CUT daemon).
+        # Expose the Lux estimate as telemetry (opt-in, self-throttled,
+        # independent of every mode below) — an external consumer, not this
+        # program, owns any day/night logic built on it (the IR-CUT daemon,
+        # scripts/ircut_release_gpio.py --watch).
         self._publish_lux(request)
 
         # Detector frames, throttled to analysis_fps. The IR check reads the
