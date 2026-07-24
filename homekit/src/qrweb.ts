@@ -403,7 +403,11 @@ export class QrWebServer {
   }
 }
 
-function esc(s: string): string {
+/** HTML-escape for ELEMENT TEXT content only (&, <, > — sufficient there).
+ *  Never use inside an attribute value: quotes are deliberately not escaped
+ *  because no call site puts user data in attributes — a test pins this
+ *  contract. Exported for that test. */
+export function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
