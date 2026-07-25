@@ -4,13 +4,35 @@ A symptom-by-symptom guide for a deployed install. Paths assume the default
 install location `/opt/pi4cam`. The primary target is the **Raspberry Pi Zero 2 W**,
 so most notes are written with its constraints in mind.
 
-Three systemd services make up the system:
+The systemd units installed by `install.sh`:
 
 | Service | Role |
 |---|---|
 | `pi4cam` | Camera pipeline (picamera2 → hardware H264 → RTSP) + motion detection |
 | `pi4cam-homekit` | HomeKit accessory (live stream, snapshot, HKSV, status page) |
 | `mediamtx` | Local RTSP server (`rtsp://127.0.0.1:8554/camera`) |
+| `pi4cam-warm` (+ timer) | Keeps ffmpeg's dependency tree soft-cached for fast live starts |
+
+(One more unit exists in the repo but is **not** installed by install.sh:
+`scripts/pi4cam-ircut-release.service`, the opt-in hardware IR-CUT daemon —
+see its section below.)
+
+## Contents
+
+- [First reflexes](#first-reflexes)
+- [Thermal & throttling](#thermal--throttling)
+- [Memory & swap](#memory--swap)
+- [Live stream is slow to appear (or won't show)](#live-stream-is-slow-to-appear-or-wont-show)
+- [Camera service won't start / VIDIOC_STREAMON crash](#camera-service-wont-start--vidioc_streamon-crash)
+- [Motion detection](#motion-detection)
+- [HKSV clips: where they start and end](#hksv-clips-where-they-start-and-end)
+- [IR night vision (beta)](#ir-night-vision-beta)
+- [Hardware IR-CUT filter — GPIO day/night (opt-in)](#hardware-ir-cut-filter--gpio-daynight-opt-in)
+- [USB webcam (beta)](#usb-webcam-beta)
+- [Snapshot](#snapshot)
+- [Pairing: backup & restore](#pairing-backup--restore)
+- [Pairing / discovery](#pairing--discovery)
+- [Pi Zero W v1 / Pi 1 (ARMv6) — unofficial](#pi-zero-w-v1--pi-1-armv6--unofficial-here-be-dragons)
 
 ---
 
@@ -142,11 +164,15 @@ the wait for the next keyframe plus `ffmpeg` startup.
   **`pi4cam-warm.timer`** keeps ffmpeg's full dependency tree soft-cached,
   and the app **forces encoder keyframes** (salvo over the first 20 s) so
   the viewer never waits out the GOP once ffmpeg connects. The real cure is
-  the **lean static ffmpeg**: run `bash scripts/build-static-ffmpeg.sh` once
-  on the Pi (~45 min) — it installs `/opt/pi4cam/bin/ffmpeg-static`
-  (RTSP/RTP/SRTP/H264-copy/AAC only, zero external libraries, ~0.2 s
-  startup), which the app auto-detects on restart (it logs its choice:
-  `[main] ffmpeg for live/HKSV: …`). To revert, delete that file.
+  the **lean static ffmpeg** (RTSP/RTP/SRTP/H264-copy/AAC only, zero
+  external libraries, ~0.2 s startup) at `/opt/pi4cam/bin/ffmpeg-static`,
+  which the app auto-detects on restart (it logs its choice:
+  `[main] ffmpeg for live/HKSV: …`). **On arm64 (Zero 2 W / Pi 3 / Pi 4),
+  install.sh already downloads a checksum-verified prebuilt** — check
+  whether the file is there before doing anything. Building locally with
+  `bash scripts/build-static-ffmpeg.sh` (~45 min on the Pi) is only needed
+  on armv6/armv7 boards, where no prebuilt is published. To revert to the
+  system ffmpeg, delete that file.
 
 Diagnose the cold-start theory (optional):
 
@@ -346,13 +372,20 @@ shared if the module is powered from the Pi's CSI/header).
    python3 scripts/ircut_release_gpio.py --gpio 17 --day     # filter in
    python3 scripts/ircut_release_gpio.py --gpio 17 --status
    ```
-2. **Deploy the current code** so pi4cam publishes Lux (`install.sh` runs the
-   camera from `/opt/pi4cam` — a `git pull` alone is not enough):
+2. **Enable the Lux telemetry** — it is **opt-in** (empty = off, the shipped
+   default): set the key in `/opt/pi4cam/config.yaml`
+   ```yaml
+   camera:
+     lux_path: /dev/shm/pi4cam-lux
+   ```
+   then deploy/restart (`install.sh` runs the camera from `/opt/pi4cam` — a
+   `git pull` alone is not enough) and verify:
    ```bash
-   sudo bash install.sh          # or: sudo cp -r camera/. /opt/pi4cam/camera/
+   sudo bash install.sh           # safest full deploy (preserves your config)
    sudo systemctl restart pi4cam
    cat /dev/shm/pi4cam-lux        # a number must appear within a few seconds
    ```
+   Without the key, the daemon logs `no fresh Lux` and holds day mode.
 3. **Install the daemon** (`install.sh` does **not** deploy `scripts/` — it
    runs from your git checkout, so fix the path and pin):
    ```bash
@@ -376,17 +409,19 @@ python3 scripts/ircut_release_gpio.py --gpio 17 --day   # leave the filter engag
 ```
 
 Stopping the daemon leaves the GPIO wherever it last was, so reset it to day
-(or unplug the control wire — the module reverts to its own default). pi4cam
-keeps writing `/dev/shm/pi4cam-lux`; it is harmless telemetry, nothing to undo.
+(or unplug the control wire — the module reverts to its own default). To also
+stop the telemetry, clear `camera.lux_path` in `/opt/pi4cam/config.yaml`
+(empty = off) and restart `pi4cam` — though leaving it on is harmless
+(~10 bytes to tmpfs every 2 s).
 
 ### Calibrate
 
 Watch `journalctl -u pi4cam-ircut-release -f` and set the thresholds in the
 service unit's `ExecStart` from real readings on your rig:
 
-- **`--night-below`** (default 15) — how dark before it goes night. Raise it to
-  switch earlier at dusk (more ambient light left), lower it to wait for deeper
-  dark.
+- **`--night-below`** (script default 8; the shipped unit passes 15) — how dark
+  before it goes night. Raise it to switch earlier at dusk (more ambient light
+  left), lower it to wait for deeper dark.
 - **`--day-above`** (default 45) — the anti-oscillation guard: keep it **above**
   your filter-out night Lux (the trap above). Only `--day-above > --night-below`
   is valid.

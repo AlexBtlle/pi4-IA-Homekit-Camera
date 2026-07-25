@@ -13,19 +13,19 @@ Pas de Homebridge, pas de plugin, pas de compte cloud, pas d'interface d'adminis
 ## Fonctionnalités
 
 - **Flux en direct** — le H264 matériel du Pi est transmis tel quel à HomeKit (SRTP, zéro ré-encodage). 1080p30 fluide, CPU quasiment au repos. Les contrôleurs IPv6 sont pris en charge (*bêta* — implémenté selon la spec, pas encore validé sur un réseau IPv6-preferred ; retours bienvenus).
-- **HomeKit Secure Video** — enregistrements déclenchés par le mouvement, stockés dans iCloud, lisibles directement dans l'historique de l'app Maison. Un prébuffer glissant de 4 secondes fait démarrer chaque clip avant l'événement.
+- **HomeKit Secure Video** — enregistrements déclenchés par le mouvement, stockés dans iCloud, lisibles directement dans l'historique de l'app Maison. Un prébuffer glissant (6 s de fragments retenus) fait démarrer chaque clip avant l'événement.
 - **Classification intelligente** — la détection Personnes / Animaux / Véhicules est faite par votre concentrateur Apple (Apple TV / HomePod), exactement comme les caméras HKSV du commerce. Le Pi se contente de signaler le mouvement, de façon fiable et économe.
 - **Notifications riches** — alertes de mouvement avec snapshot sur l'iPhone.
 - **Vision nocturne** *(bêta)* — sous éclairage IR, le flux et la miniature passent en niveaux de gris (supprimant la dominante rose du 850 nm), et les scènes couleur sombres sont éclaircies automatiquement à mesure que la lumière baisse. Détection et correction embarquées, avec hystérésis pour éviter le scintillement.
 - **Tableau de bord** — une page web intégrée (`http://<pi>.local:8080`) affiche le QR code d'appairage et un état en temps réel : statut global, température & throttling, charge CPU, RAM/swap, uptime, statut par service, fraîcheur du snapshot, état HKSV et dernier mouvement.
-- **Léger** — ~210 Mo de RAM avec un flux actif, faible charge CPU, trois petits services systemd.
+- **Léger** — ~210 Mo de RAM avec un flux actif, faible charge CPU, une poignée de petits services systemd.
 - **Privé** — tout tourne sur votre Pi. Le flux RTSP est restreint à localhost (jamais exposé sur le réseau) ; le seul cloud impliqué est votre propre iCloud (pour les enregistrements HKSV, chiffrés de bout en bout par Apple).
 
 ## Prérequis
 
 | | |
 |---|---|
-| **Carte** | Raspberry Pi 4 (toutes tailles de RAM), Pi Zero 2 W, Pi 3. **Pas encore le Pi 5** — il n'a pas d'encodeur H264 matériel (au programme). |
+| **Carte** | Raspberry Pi 4 (toutes tailles de RAM), Pi Zero 2 W, Pi 3. **Pas le Pi 5** — il n'a pas d'encodeur H264 matériel, et le projet vise délibérément les petites cartes. |
 | **Caméra** | Tout module CSI supporté par `libcamera` (Camera Module 2/3, HQ, NoIR…) |
 | **OS** | Raspberry Pi OS **64 bits** |
 | **Côté Apple** | iPhone + un concentrateur (Apple TV 4K ou HomePod) |
@@ -166,6 +166,8 @@ Le zéro ré-encodage est le choix qui rend le projet viable sur Pi Zero 2 W —
 ## Configuration
 
 Tout tient dans un seul fichier : [`config.yaml`](config.yaml). Sur un système installé, modifiez directement `/opt/pi4cam/config.yaml` puis redémarrez les services (`sudo systemctl restart pi4cam pi4cam-homekit`). Relancer `install.sh` n'écrase jamais vos valeurs — il n'ajoute que les clés introduites par les nouvelles versions (une référence annotée est conservée dans `/opt/pi4cam/config.yaml.dist`).
+
+Le tableau ci-dessous couvre les clés les plus courantes. **La référence complète et toujours à jour est [`config.yaml`](config.yaml) lui-même** — chaque clé y figure avec un commentaire explicatif (réglages vision nocturne, détection de mouvement, ports, télémétrie…).
 
 | Clé | Défaut | Description |
 |---|---|---|

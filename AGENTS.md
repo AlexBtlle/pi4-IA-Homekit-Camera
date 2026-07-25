@@ -69,6 +69,9 @@ Deux services applicatifs + un serveur RTSP, reliés par mediamtx :
 - **`camera/` (Python, service `pi4cam`)** : picamera2 → pipe H264 →
   `RtspPublisher` (ffmpeg → mediamtx) ; piste lores YUV → `PresenceDetector`
   (MOG2 → webhook HTTP vers l'app Node sur motion). Entrée : `camera/main.py`.
+  Aussi : `usb_camera_manager.py` (backend UVC bêta, sélectionné par
+  `camera.source: usb`) et `control_server.py` (endpoint localhost:8990 —
+  bitrate dynamique #47 et keyframe immédiate #43, piloté par l'app Node).
 - **`homekit/` (TypeScript/HAP-NodeJS, service `pi4cam-homekit`)** : live stream
   (ffmpeg `-c:v copy` depuis RTSP), snapshot, capteur de mouvement, HKSV
   (prebuffer fMP4 + recording delegate). Entrée : `homekit/src/main.ts`.
@@ -104,6 +107,11 @@ journalctl -u pi4cam-homekit -f    # logs HomeKit/stream
 ## Disposition runtime
 
 - Code déployé : `/opt/pi4cam/` (config : `/opt/pi4cam/config.yaml`).
+- **Piège récurrent (a mordu deux fois)** : les services tournent depuis
+  `/opt/pi4cam`, pas depuis le clone git — un `git pull` seul ne change rien
+  au runtime, il faut re-passer par `install.sh`. Et install.sh ne déploie
+  **que** `camera/` et `homekit/` : `scripts/` (utilitaires, banc, daemon
+  IR-CUT) s'exécute depuis le clone, jamais depuis `/opt/pi4cam`.
 - Secrets d'appairage (PIN, setup ID, MAC) : `/opt/pi4cam/homekit/pairing.json`
   — générés par install.sh, **jamais commités**.
 
@@ -126,6 +134,13 @@ journalctl -u pi4cam-homekit -f    # logs HomeKit/stream
   l'armement. La **fin** des clips est montée par le hub selon sa propre
   analyse vidéo : `cooldown`/`motion_timeout` allongent le flux envoyé, pas
   le clip retenu — ce n'est pas un bug.
+- **IR-CUT matériel (daemon `scripts/ircut_release_gpio.py --watch`)** : le
+  Lux mesuré **dépend de la position du filtre** (filtre en place ≈ 7 lux au
+  crépuscule, filtre retiré + LED IR ≈ 27 lux sur la même scène) → si
+  `--day-above` est sous la lecture nocturne éclairée-IR, le filtre oscille
+  (clignotement ~75 s constaté). `--day-above` doit rester AU-DESSUS du Lux
+  nocturne filtre-retiré. La télémétrie `camera.lux_path` est **opt-in**
+  (vide = off) — sans elle, le daemon tient le mode jour.
 - **`min_motion_area`** : pixels absolus sur la frame lores. À recalibrer si on
   change `lores_width`/`lores_height`. Bas = détecte le chat mais plus de faux
   positifs ; laisser HKSV (Apple TV) classer Personnes/Animaux/Véhicules.
