@@ -2,13 +2,12 @@
 
 This is the feature whose missing config key motivated the config-key guard
 test: it shipped enabled-by-default and undocumented. Locked in here:
-disabled means NOTHING happens, enabled writes atomically and
-self-throttles, and failures never propagate into the capture callback.
-
-_publish_lux takes the metadata DICT (fetched once per analysed frame by
-the callback and shared with the day-lift and IR stats consumers), not the
-request object.
+disabled means NOTHING happens (not even a metadata read), enabled writes
+atomically and self-throttles, and failures never propagate into the
+capture callback.
 """
+from unittest.mock import MagicMock
+
 from camera.camera_manager import CameraManager
 
 
@@ -20,24 +19,30 @@ def _mgr(lux_path=None, **camera) -> CameraManager:
     return CameraManager({"camera": cfg})
 
 
-def test_disabled_by_default_does_nothing(tmp_path):
+def _request(lux=215.5):
+    req = MagicMock()
+    req.get_metadata.return_value = {"Lux": lux}
+    return req
+
+
+def test_disabled_by_default_does_nothing():
     mgr = _mgr()  # no lux_path key → opt-in default: off
-    mgr._publish_lux({"Lux": 215.5})
-    assert list(tmp_path.iterdir()) == []  # nothing written anywhere near us
-    assert mgr._last_lux_publish == 0.0    # throttle clock untouched: no work done
+    req = _request()
+    mgr._publish_lux(req)
+    req.get_metadata.assert_not_called()  # not even a metadata fetch
 
 
 def test_empty_and_whitespace_paths_disable():
     for raw in ("", "   "):
-        mgr = _mgr(lux_path=raw)
-        mgr._publish_lux({"Lux": 215.5})
-        assert mgr._last_lux_publish == 0.0
+        req = _request()
+        _mgr(lux_path=raw)._publish_lux(req)
+        req.get_metadata.assert_not_called()
 
 
 def test_enabled_writes_the_value_atomically(tmp_path):
     target = tmp_path / "lux"
     mgr = _mgr(lux_path=str(target))
-    mgr._publish_lux({"Lux": 215.51})
+    mgr._publish_lux(_request(lux=215.51))
     assert target.read_text() == "215.5\n"
     # os.replace() semantics: no half-written temp file left behind
     assert list(tmp_path.iterdir()) == [target]
@@ -46,26 +51,29 @@ def test_enabled_writes_the_value_atomically(tmp_path):
 def test_throttles_to_one_write_per_interval(tmp_path):
     target = tmp_path / "lux"
     mgr = _mgr(lux_path=str(target))
-    mgr._publish_lux({"Lux": 10.0})
-    mgr._publish_lux({"Lux": 99.0})  # immediately after → throttled
+    mgr._publish_lux(_request(lux=10.0))
+    mgr._publish_lux(_request(lux=99.0))  # immediately after → throttled
     assert target.read_text() == "10.0\n"
 
 
-def test_missing_metadata_or_lux_writes_nothing(tmp_path):
+def test_missing_lux_metadata_writes_nothing(tmp_path):
     target = tmp_path / "lux"
     mgr = _mgr(lux_path=str(target))
-    mgr._publish_lux(None)  # metadata fetch failed upstream
-    mgr._publish_lux({})    # tuning without a Lux estimate
+    req = MagicMock()
+    req.get_metadata.return_value = {}  # tuning without a Lux estimate
+    mgr._publish_lux(req)
     assert not target.exists()
 
 
-def test_malformed_lux_never_raises(tmp_path):
+def test_metadata_error_never_raises(tmp_path):
     target = tmp_path / "lux"
     mgr = _mgr(lux_path=str(target))
-    mgr._publish_lux({"Lux": "not-a-number"})  # must not raise into the callback
+    req = MagicMock()
+    req.get_metadata.side_effect = RuntimeError("camera stopping")
+    mgr._publish_lux(req)  # must not raise into the capture callback
     assert not target.exists()
 
 
 def test_unwritable_path_never_raises():
     mgr = _mgr(lux_path="/nonexistent-dir/lux")
-    mgr._publish_lux({"Lux": 5.0})  # OSError swallowed by design
+    mgr._publish_lux(_request())  # OSError swallowed by design

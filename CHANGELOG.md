@@ -69,11 +69,6 @@ Versions track `homekit/package.json`; each release is tagged in git.
 
 ### Changed
 
-- **Per-analysed-frame work reduced** on the camera hot path: the two
-  `np.percentile` calls over the lores luma become one `bincount`+`cumsum`
-  pass, the 256-entry LUT is only rebuilt when its (EMA-smoothed) endpoints
-  actually move, and frame metadata is fetched once and shared instead of up
-  to three times.
 - `tests/conftest.py` no longer mocks numpy, so numeric paths are testable;
   numpy joins pytest/pyyaml as a CI dev dependency.
 - TROUBLESHOOTING gained a table of contents; the READMEs now point to

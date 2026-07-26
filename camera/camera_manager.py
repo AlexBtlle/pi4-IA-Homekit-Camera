@@ -158,8 +158,7 @@ class CameraManager:
         self._day_gamma = max(1.0, min(4.0, float(self._cfg.get("day_gamma", 1.0))))
         self._day_lift_active = False   # hysteresis latch (dim-scene lift engaged)
         self._day_lift_streak = 0       # consecutive frames voting the other way
-        self._day_lut: np.ndarray | None = None  # auto-levels LUT (see refresh)
-        self._day_lut_key: tuple | None = None   # rounded endpoints of that LUT
+        self._day_lut: np.ndarray | None = None  # auto-levels LUT, rebuilt per frame
         self._day_low: float | None = None       # EMA'd black point (lores p5)
         self._day_high: float | None = None       # EMA'd white point (lores p99)
 
@@ -200,8 +199,7 @@ class CameraManager:
         # is applied to the main frame's luma in the night callback below.
         # 1.0 disables the whole brightening (chroma still neutralised).
         self._ir_gamma = max(1.0, min(5.0, float(self._cfg.get("ir_gamma", 2.2))))
-        self._ir_gamma_lut: np.ndarray | None = None  # rebuilt when the EMA moves
-        self._night_lut_key: tuple | None = None      # rounded endpoints of that LUT
+        self._ir_gamma_lut: np.ndarray | None = None  # rebuilt per analysed frame
         self._night_low: float | None = None
         self._night_high: float | None = None
 
@@ -479,7 +477,7 @@ class CameraManager:
         except Exception:
             logger.warning("Night camera control rejected", exc_info=True)
 
-    def _publish_lux(self, metadata: dict | None) -> None:
+    def _publish_lux(self, request) -> None:
         """Write the AEC's Lux estimate to self._lux_path as telemetry.
 
         OPT-IN: does nothing unless `camera.lux_path` is set — the check comes
@@ -493,16 +491,16 @@ class CameraManager:
         owns those); this only exposes the raw number a standalone consumer
         cannot otherwise get without opening the camera pi4cam already holds.
         """
-        if not self._lux_path or metadata is None:
+        if not self._lux_path:
             return
         now = time.monotonic()
         if now - self._last_lux_publish < self._lux_publish_interval:
             return
         self._last_lux_publish = now
         try:
-            lux = float(metadata.get("Lux", -1.0))
+            lux = float(request.get_metadata().get("Lux", -1.0))
         except Exception:
-            return  # malformed metadata — telemetry is best-effort
+            return  # metadata unavailable — telemetry is best-effort
         if lux < 0.0:
             return  # this tuning doesn't report Lux
         try:
@@ -513,7 +511,7 @@ class CameraManager:
         except OSError:
             pass  # /dev/shm unavailable — never block capture over telemetry
 
-    def _update_day_lift(self, metadata: dict | None) -> None:
+    def _update_day_lift(self, request) -> None:
         """Auto day/colour brightening (#52): latch the gamma lift on while the
         scene is dim, off in bright light, with value hysteresis.
 
@@ -523,12 +521,12 @@ class CameraManager:
         never fires. The latch drives the LUT applied in the capture callback;
         night owns the frame while latched, so this bows out in IR mode.
         """
-        if self._ir_mode or metadata is None:
+        if self._ir_mode:
             return
         try:
-            lux = float(metadata.get("Lux", -1.0))
+            lux = float(request.get_metadata().get("Lux", -1.0))
         except Exception:
-            return  # malformed metadata — skip this frame, never crash the callback
+            return  # metadata missing — skip this frame, never crash the callback
         if lux < 0.0:
             return  # this tuning doesn't report Lux — feature stays inert
         # Value hysteresis: which state does THIS frame vote for?
@@ -655,31 +653,22 @@ class CameraManager:
         now = time.monotonic()
         self._last_frame_time = now  # always update for the watchdog
 
+        # Expose the Lux estimate as telemetry (opt-in, self-throttled,
+        # independent of every mode below) — an external consumer, not this
+        # program, owns any day/night logic built on it (the IR-CUT daemon,
+        # scripts/ircut_release_gpio.py --watch).
+        self._publish_lux(request)
+
         # Detector frames, throttled to analysis_fps. The IR check reads the
         # lores chroma planes here, BEFORE any neutralisation below, so night
         # mode is always measured on real colour data.
         if self._lores_interval <= 0 or now - self._last_lores_time >= self._lores_interval:
             self._last_lores_time = now
             arr = request.make_array("lores")
-            # One metadata fetch shared by every consumer below (telemetry,
-            # day-lift trigger, IR stats log) — this used to be up to three
-            # get_metadata() calls on the same frame. None = fetch failed;
-            # each consumer already treats that as "skip, never crash".
-            metadata = None
-            if self._lux_path or self._ir_grayscale or self._day_gamma > 1.0:
-                try:
-                    metadata = request.get_metadata()
-                except Exception:
-                    pass
-            # Lux telemetry (opt-in, self-throttled to ~2 s — far coarser
-            # than the analysis rate, so publishing from here loses nothing).
-            # An external consumer, not this program, owns any day/night
-            # logic built on it (scripts/ircut_release_gpio.py --watch).
-            self._publish_lux(metadata)
             if self._ir_grayscale:
-                self._update_night_mode(arr, metadata)
+                self._update_night_mode(arr, request)
             if self._day_gamma > 1.0:
-                self._update_day_lift(metadata)
+                self._update_day_lift(request)
                 if self._day_lift_active:
                     self._refresh_day_lut(arr)     # track the black point every frame
                 elif self._day_lut is not None:
@@ -738,26 +727,6 @@ class CameraManager:
                 lut.append(round(255.0 * min(1.0, x) ** inv))
         return lut
 
-    @classmethod
-    def _luma_percentiles(cls, y) -> tuple[float, float]:
-        """Both auto-levels percentiles (p5/p99) from ONE histogram pass.
-
-        Replaces two np.percentile calls, each of which copies and partitions
-        the whole 76 800-pixel plane per analysed frame; bincount+cumsum is a
-        single O(n) sweep with a 256-entry result. Nearest-rank semantics
-        instead of np.percentile's linear interpolation — at most ±1 luma
-        apart, which vanishes under the 0.15 EMA, the LUT's rounding and the
-        min-span floor. Hot-path change, field-measured (see commit).
-        """
-        hist = np.bincount(y.ravel(), minlength=256)
-        cum = np.cumsum(hist)
-        total = int(cum[-1])
-        low_rank = max(1, round(total * cls.NIGHT_LUT_LOW_PCT / 100.0))
-        high_rank = max(1, round(total * cls.NIGHT_LUT_HIGH_PCT / 100.0))
-        low = int(np.searchsorted(cum, low_rank, side="left"))
-        high = int(np.searchsorted(cum, high_rank, side="left"))
-        return float(low), float(high)
-
     def _refresh_night_lut(self, lores_arr) -> None:
         """Rebuild the night LUT from this frame's lores-luma statistics.
 
@@ -768,24 +737,18 @@ class CameraManager:
         scene content moves through the percentiles.
         """
         y = lores_arr[:self._lores_h, :self._lores_w]
-        low, high = self._luma_percentiles(y)
+        low = float(np.percentile(y, self.NIGHT_LUT_LOW_PCT))
+        high = float(np.percentile(y, self.NIGHT_LUT_HIGH_PCT))
         if self._night_low is None or self._night_high is None:
             self._night_low, self._night_high = low, high
         else:
             a = self.NIGHT_STATS_EMA
             self._night_low += a * (low - self._night_low)
             self._night_high += a * (high - self._night_high)
-        # The 256-iteration Python rebuild only matters while the EMA is
-        # actually moving: once it converges the inputs are static, so skip
-        # the rebuild until the rounded endpoints change (<1 luma of lag —
-        # invisible, and the first frame always builds since the key is None).
-        key = (round(self._night_low), round(self._night_high))
-        if self._ir_gamma_lut is None or key != self._night_lut_key:
-            self._night_lut_key = key
-            self._ir_gamma_lut = np.array(
-                self._build_night_lut(self._night_low, self._night_high, self._ir_gamma),
-                dtype=np.uint8,
-            )
+        self._ir_gamma_lut = np.array(
+            self._build_night_lut(self._night_low, self._night_high, self._ir_gamma),
+            dtype=np.uint8,
+        )
 
     def _refresh_day_lut(self, lores_arr) -> None:
         """Rebuild the day-lift LUT from this frame's lores-luma percentiles.
@@ -797,21 +760,18 @@ class CameraManager:
         lores is never touched, so the statistics see the raw sensor.
         """
         y = lores_arr[:self._lores_h, :self._lores_w]
-        low, high = self._luma_percentiles(y)
+        low = float(np.percentile(y, self.NIGHT_LUT_LOW_PCT))
+        high = float(np.percentile(y, self.NIGHT_LUT_HIGH_PCT))
         if self._day_low is None or self._day_high is None:
             self._day_low, self._day_high = low, high
         else:
             a = self.NIGHT_STATS_EMA
             self._day_low += a * (low - self._day_low)
             self._day_high += a * (high - self._day_high)
-        # Same converged-EMA skip as the night LUT above.
-        key = (round(self._day_low), round(self._day_high))
-        if self._day_lut is None or key != self._day_lut_key:
-            self._day_lut_key = key
-            self._day_lut = np.array(
-                self._build_night_lut(self._day_low, self._day_high, self._day_gamma),
-                dtype=np.uint8,
-            )
+        self._day_lut = np.array(
+            self._build_night_lut(self._day_low, self._day_high, self._day_gamma),
+            dtype=np.uint8,
+        )
 
     @classmethod
     def _is_ir_frame(cls, u_mean: float, u_std: float,
@@ -842,7 +802,7 @@ class CameraManager:
         uniform = u_std < cls.IR_CHROMA_STD_MAX and v_std < cls.IR_CHROMA_STD_MAX
         return uniform and cast > cls.IR_CAST_MIN
 
-    def _update_night_mode(self, lores_arr, metadata: dict | None = None) -> None:
+    def _update_night_mode(self, lores_arr, request=None) -> None:
         """
         Feed one analysed lores frame to the IR detector. Reads the U/V planes
         of the planar YUV420 array — always untouched colour data, since the
@@ -868,13 +828,14 @@ class CameraManager:
         if now - self._ir_last_stats_log >= 600.0:
             self._ir_last_stats_log = now
             ae = ""
-            if metadata is not None:
+            if request is not None:
                 try:
+                    md = request.get_metadata()
                     ae = "  exp=%.1fms gain=%.2fx dg=%.2f lux=%.0f" % (
-                        metadata.get("ExposureTime", 0) / 1000.0,
-                        metadata.get("AnalogueGain", 0.0),
-                        metadata.get("DigitalGain", 0.0),
-                        metadata.get("Lux", 0.0),
+                        md.get("ExposureTime", 0) / 1000.0,
+                        md.get("AnalogueGain", 0.0),
+                        md.get("DigitalGain", 0.0),
+                        md.get("Lux", 0.0),
                     )
                 except Exception:
                     pass  # metadata is diagnostic sugar — never block the vote
