@@ -3,12 +3,12 @@
 All notable changes to this project are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-Entries before 1.7.0 were reconstructed from the git history and release tags,
+Entries before 1.7 were reconstructed from the git history and release tags,
 so they summarise each version rather than reproducing its release notes.
 
 Versions track `homekit/package.json`; each release is tagged in git.
 
-## [1.7.0] — unreleased
+## [1.7] — 2026-08-05
 
 ### ⚠ Upgrade notes
 
