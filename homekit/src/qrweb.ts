@@ -26,6 +26,9 @@ export class QrWebServer {
     private readonly snapshotPath: string,
     private readonly motionService?: MotionService,
     private readonly recording?: RecordingDelegate,
+    // Same default as config.ts's rtsp.port fallback — kept optional so the
+    // constructor stays compatible, but main.ts passes the configured value.
+    private readonly rtspPort: number = 8554,
   ) {}
 
   start(): this {
@@ -55,9 +58,19 @@ export class QrWebServer {
         res.end("Starting…");
         return;
       }
-      const page = await this.cachedPage();
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(page);
+      // The handler is async: without this guard a rejecting buildPage()
+      // would be an unhandled rejection — fatal on modern Node — instead of
+      // a 500. Every probe inside buildPage currently swallows its own
+      // errors, so this is a belt for the day one of them stops doing so.
+      try {
+        const page = await this.cachedPage();
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(page);
+      } catch (e) {
+        console.error(`[qrweb] page build failed: ${(e as Error).message}`);
+        if (!res.headersSent) res.writeHead(500);
+        res.end("status page error");
+      }
     });
 
     // A taken port (8080 is popular) must log, not crash-loop the service.
@@ -76,7 +89,15 @@ export class QrWebServer {
   private cachedPage(): Promise<string> {
     const now = performance.now();
     if (!this._page || now - this._page.at >= QrWebServer.PAGE_TTL_MS) {
-      this._page = { promise: this.buildPage(), at: now };
+      const promise = this.buildPage();
+      // A failed build must not be served for a whole TTL: drop it from the
+      // cache on rejection so the next request rebuilds immediately. (The
+      // identity check keeps a newer entry from being evicted by an old
+      // failure racing in late.)
+      promise.catch(() => {
+        if (this._page?.promise === promise) this._page = undefined;
+      });
+      this._page = { promise, at: now };
     }
     return this._page.promise;
   }
@@ -271,7 +292,7 @@ export class QrWebServer {
       <div class="rows">
         <div class="row"><span class="name">pi4cam-homekit</span><span class="val">${dot("ok")}running</span></div>
         <div class="row"><span class="name">pi4cam</span><span class="val">${dot(pi4camLevel)}${pi4camActive === null ? "n/a" : pi4camActive ? "running" : "stopped"}</span></div>
-        <div class="row"><span class="name">mediamtx</span><span class="val">${dot(mediamtxLevel)}${mediamtxOk ? "RTSP :8554" : "down"}</span></div>
+        <div class="row"><span class="name">mediamtx</span><span class="val">${dot(mediamtxLevel)}${mediamtxOk ? `RTSP :${this.rtspPort}` : "down"}</span></div>
       </div>
     </div>
 
@@ -365,7 +386,7 @@ export class QrWebServer {
     return new Promise((resolve) => {
       const sock = new net.Socket();
       sock.setTimeout(500);
-      sock.connect(8554, "127.0.0.1", () => { sock.destroy(); resolve(true); });
+      sock.connect(this.rtspPort, "127.0.0.1", () => { sock.destroy(); resolve(true); });
       sock.on("error", () => resolve(false));
       sock.on("timeout", () => { sock.destroy(); resolve(false); });
     });
@@ -382,7 +403,11 @@ export class QrWebServer {
   }
 }
 
-function esc(s: string): string {
+/** HTML-escape for ELEMENT TEXT content only (&, <, > — sufficient there).
+ *  Never use inside an attribute value: quotes are deliberately not escaped
+ *  because no call site puts user data in attributes — a test pins this
+ *  contract. Exported for that test. */
+export function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 

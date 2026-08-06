@@ -9,6 +9,9 @@ import yaml from "js-yaml";
 export interface AppConfig {
   cameraName: string;
   rtspUrl: string;
+  /** The bare rtsp.port (already baked into rtspUrl) — for consumers that
+   *  probe the port itself, like the status page's mediamtx check. */
+  rtspPort: number;
   motionPort: number;
   motionTimeout: number;
   width: number;
@@ -31,7 +34,8 @@ const STATIC_FFMPEG = "/opt/pi4cam/bin/ffmpeg-static";
  * starts in ~0.2 s. Explicit config wins, then the static build if present,
  * then the system ffmpeg.
  */
-function resolveFfmpeg(configured: unknown): string {
+export function resolveFfmpeg(configured: unknown): string {
+  // (exported for tests only — call sites go through loadConfig)
   if (configured) {
     return String(configured);
   }
@@ -97,6 +101,7 @@ export function loadConfig(): AppConfig {
   return {
     cameraName: String(homekit.camera_name ?? "Pi Camera"),
     rtspUrl: `rtsp://127.0.0.1:${rtspPort}/camera`,
+    rtspPort,
     motionPort: Number(homekit.motion_port ?? 8989),
     motionTimeout: Number(homekit.motion_timeout ?? 10),
     width: Number(camera.width ?? 1920),

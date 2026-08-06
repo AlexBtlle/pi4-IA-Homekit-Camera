@@ -1,0 +1,12 @@
+{
+  // Typecheck-only config covering tests/ — the build tsconfig deliberately
+  // includes src/ only (tests must never land in dist/), which meant the
+  // test files were never typechecked at all, locally or in CI. Run via
+  // `npm run typecheck` (noEmit: nothing is produced).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}

@@ -16,6 +16,17 @@ logger = logging.getLogger(__name__)
 # config so the camera and HomeKit services always agree on the same path.
 DEFAULT_SNAPSHOT_PATH = "/dev/shm/pi4cam-snapshot.jpg"
 
+# Write-only telemetry: the AEC's Lux estimate, refreshed a few times a
+# minute, for external consumers that need scene illuminance without opening
+# the camera (which pi4cam holds). Notably scripts/ircut_release_gpio.py
+# --watch — the standalone IR-CUT day/night daemon — reads this. Emitting it
+# is NOT the feature: no thresholds, no filter logic here, just the raw
+# number. tmpfs so it never touches the SD card.
+#
+# OPT-IN: `camera.lux_path` ships empty, so an install with no IR-CUT hardware
+# writes nothing at all. Suggested value when a consumer needs it:
+SUGGESTED_LUX_PATH = "/dev/shm/pi4cam-lux"
+
 
 class CameraManager:
     """
@@ -48,10 +59,11 @@ class CameraManager:
     # (grey-world) averages this far from neutral: an extreme mean offset is
     # conclusive on its own — no uniformity required.
     IR_CAST_STRONG = 20.0     # |mean − 128| beyond which IR is certain, any std
-    # Hysteresis, counted in analysed lores frames (analysis_fps per second).
+    # Hysteresis, counted in analysed lores frames — so the wall-clock delay
+    # scales with detection.analysis_fps (shipped default 10; Zero 2 W preset 5).
     # Exit is slower than entry so car headlights at night can't flip us back.
-    IR_ENTRY_FRAMES = 15      # ≈3 s at 5 fps before switching to grayscale
-    IR_EXIT_FRAMES = 50       # ≈10 s at 5 fps before returning to colour
+    IR_ENTRY_FRAMES = 15      # ≈1.5 s at 10 fps (3 s at 5) before grayscale
+    IR_EXIT_FRAMES = 50       # ≈5 s at 10 fps (10 s at 5) before colour returns
     # Day-lift auto trigger (#52), on the AEC's Lux estimate. Lux, not analogue
     # gain: the sensor's AnalogueGain max reads as the *hardware* max (63.9x on
     # OV5647) while the AEC operationally tops out ~8x, so a gain fraction never
@@ -124,6 +136,12 @@ class CameraManager:
         self._lores_h = int(self._cfg.get("lores_height", 240))
         self._snapshot_interval = float(self._cfg.get("snapshot_interval", 2))
         self._snapshot_path = str(self._cfg.get("snapshot_path", DEFAULT_SNAPSHOT_PATH))
+        # Lux telemetry (see SUGGESTED_LUX_PATH): OPT-IN — empty path disables
+        # it entirely, so an install with no consumer writes nothing at all.
+        # Best-effort, ~1 write / 2 s when enabled.
+        self._lux_path = str(self._cfg.get("lux_path", "") or "").strip()
+        self._last_lux_publish = 0.0
+        self._lux_publish_interval = 2.0
         self._full_fov = bool(self._cfg.get("full_fov", True))
         self._sharpness = float(self._cfg.get("sharpness", 1.0))
         self._contrast = float(self._cfg.get("contrast", 1.0))
@@ -233,9 +251,10 @@ class CameraManager:
                 "Sharpness": self._sharpness,
                 "Contrast": self._contrast,
                 "Saturation": self._saturation,
-                # ExposureValue starts at libcamera's 0.0 default: the day-EV
-                # auto-lift (#52) engages it only once the scene proves dim,
-                # and night mode drives it via ir_exposure.
+                # ExposureValue stays at libcamera's 0.0 default by day: the
+                # EV route was tried for the dim-day lift (#52) and proved
+                # inert (the AEC ignores the bias), so day brightening is a
+                # pixel LUT instead. Only night touches EV, via ir_exposure.
             },
         )
 
@@ -414,10 +433,10 @@ class CameraManager:
           and it adds no gain-noise. Paired with AeExposureMode=Long so the AEC
           spends that budget on shutter time before analogue gain.
         - ExposureValue: bias the AE target up at night (only useful once the
-          relaxed shutter ceiling gives the AEC room to reach it). The day-EV
-          auto-lift (#52) owns this control by day; night takes it over and the
-          detector is reset on the flip back, so a dim-day lift can never leak
-          into night and re-evaluates from scratch once colour returns.
+          relaxed shutter ceiling gives the AEC room to reach it). Night is
+          the ONLY owner of this control — the day-lift (#52) is a pixel LUT,
+          its EV approach having proved inert — so reverting to 0.0 by day
+          returns the control to libcamera's default, nothing else.
 
         Each knob is skipped when its config leaves it at the daylight default,
         so a plain install is untouched. None-guarded and wrapped so a rejected
@@ -457,6 +476,40 @@ class CameraManager:
             logger.info("Night camera tuning %s → %s", "on" if on else "off", controls)
         except Exception:
             logger.warning("Night camera control rejected", exc_info=True)
+
+    def _publish_lux(self, request) -> None:
+        """Write the AEC's Lux estimate to self._lux_path as telemetry.
+
+        OPT-IN: does nothing unless `camera.lux_path` is set — the check comes
+        first, so an install without a consumer pays nothing per frame (not
+        even a metadata fetch).
+
+        Best-effort and self-throttled: a torn read is prevented by writing a
+        temp file and os.replace()-ing it (atomic on the same tmpfs). Never
+        raises into the capture callback — telemetry must not risk the stream.
+        No thresholds or filter logic live here by design (the IR-CUT daemon
+        owns those); this only exposes the raw number a standalone consumer
+        cannot otherwise get without opening the camera pi4cam already holds.
+        """
+        if not self._lux_path:
+            return
+        now = time.monotonic()
+        if now - self._last_lux_publish < self._lux_publish_interval:
+            return
+        self._last_lux_publish = now
+        try:
+            lux = float(request.get_metadata().get("Lux", -1.0))
+        except Exception:
+            return  # metadata unavailable — telemetry is best-effort
+        if lux < 0.0:
+            return  # this tuning doesn't report Lux
+        try:
+            tmp = self._lux_path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(f"{lux:.1f}\n")
+            os.replace(tmp, self._lux_path)
+        except OSError:
+            pass  # /dev/shm unavailable — never block capture over telemetry
 
     def _update_day_lift(self, request) -> None:
         """Auto day/colour brightening (#52): latch the gamma lift on while the
@@ -599,6 +652,12 @@ class CameraManager:
         """Called by picamera2's capture thread on every frame. Must be fast."""
         now = time.monotonic()
         self._last_frame_time = now  # always update for the watchdog
+
+        # Expose the Lux estimate as telemetry (opt-in, self-throttled,
+        # independent of every mode below) — an external consumer, not this
+        # program, owns any day/night logic built on it (the IR-CUT daemon,
+        # scripts/ircut_release_gpio.py --watch).
+        self._publish_lux(request)
 
         # Detector frames, throttled to analysis_fps. The IR check reads the
         # lores chroma planes here, BEFORE any neutralisation below, so night

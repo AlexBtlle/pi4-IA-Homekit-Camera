@@ -4,13 +4,35 @@ A symptom-by-symptom guide for a deployed install. Paths assume the default
 install location `/opt/pi4cam`. The primary target is the **Raspberry Pi Zero 2 W**,
 so most notes are written with its constraints in mind.
 
-Three systemd services make up the system:
+The systemd units installed by `install.sh`:
 
 | Service | Role |
 |---|---|
 | `pi4cam` | Camera pipeline (picamera2 → hardware H264 → RTSP) + motion detection |
 | `pi4cam-homekit` | HomeKit accessory (live stream, snapshot, HKSV, status page) |
 | `mediamtx` | Local RTSP server (`rtsp://127.0.0.1:8554/camera`) |
+| `pi4cam-warm` (+ timer) | Keeps ffmpeg's dependency tree soft-cached for fast live starts |
+
+(One more unit exists in the repo but is **not** installed by install.sh:
+`scripts/pi4cam-ircut-release.service`, the opt-in hardware IR-CUT daemon —
+see its section below.)
+
+## Contents
+
+- [First reflexes](#first-reflexes)
+- [Thermal & throttling](#thermal--throttling)
+- [Memory & swap](#memory--swap)
+- [Live stream is slow to appear (or won't show)](#live-stream-is-slow-to-appear-or-wont-show)
+- [Camera service won't start / VIDIOC_STREAMON crash](#camera-service-wont-start--vidioc_streamon-crash)
+- [Motion detection](#motion-detection)
+- [HKSV clips: where they start and end](#hksv-clips-where-they-start-and-end)
+- [IR night vision (beta)](#ir-night-vision-beta)
+- [Hardware IR-CUT filter — GPIO day/night (opt-in)](#hardware-ir-cut-filter--gpio-daynight-opt-in)
+- [USB webcam (beta)](#usb-webcam-beta)
+- [Snapshot](#snapshot)
+- [Pairing: backup & restore](#pairing-backup--restore)
+- [Pairing / discovery](#pairing--discovery)
+- [Pi Zero W v1 / Pi 1 (ARMv6) — unofficial](#pi-zero-w-v1--pi-1-armv6--unofficial-here-be-dragons)
 
 ---
 
@@ -142,11 +164,15 @@ the wait for the next keyframe plus `ffmpeg` startup.
   **`pi4cam-warm.timer`** keeps ffmpeg's full dependency tree soft-cached,
   and the app **forces encoder keyframes** (salvo over the first 20 s) so
   the viewer never waits out the GOP once ffmpeg connects. The real cure is
-  the **lean static ffmpeg**: run `bash scripts/build-static-ffmpeg.sh` once
-  on the Pi (~45 min) — it installs `/opt/pi4cam/bin/ffmpeg-static`
-  (RTSP/RTP/SRTP/H264-copy/AAC only, zero external libraries, ~0.2 s
-  startup), which the app auto-detects on restart (it logs its choice:
-  `[main] ffmpeg for live/HKSV: …`). To revert, delete that file.
+  the **lean static ffmpeg** (RTSP/RTP/SRTP/H264-copy/AAC only, zero
+  external libraries, ~0.2 s startup) at `/opt/pi4cam/bin/ffmpeg-static`,
+  which the app auto-detects on restart (it logs its choice:
+  `[main] ffmpeg for live/HKSV: …`). **On arm64 (Zero 2 W / Pi 3 / Pi 4),
+  install.sh already downloads a checksum-verified prebuilt** — check
+  whether the file is there before doing anything. Building locally with
+  `bash scripts/build-static-ffmpeg.sh` (~45 min on the Pi) is only needed
+  on armv6/armv7 boards, where no prebuilt is published. To revert to the
+  system ffmpeg, delete that file.
 
 Diagnose the cold-start theory (optional):
 
@@ -298,6 +324,117 @@ stops car headlights from flipping the mode at night).
 - **AWB gains and Lux are *not* usable signals** at 850 nm (gains barely move,
   and IR reads as ~200 lux on an OV5647) — past approaches based on them were
   removed; don't reintroduce them.
+
+---
+
+## Hardware IR-CUT filter — GPIO day/night (opt-in)
+
+Some camera modules carry a **mechanical IR-cut filter** — glass in front of
+the sensor by day (true colours), retracted by night so 850 nm IR reaches the
+sensor. On the field-tested module (**Waveshare IMX219-160 IR-CUT**) that
+filter is *not* autonomous: its onboard photoresistor drives the IR **LEDs**,
+but the **filter** only follows a control pin, so the Pi must decide day/night
+and drive it. This is a **standalone, opt-in** add-on — nothing in the main
+pipeline touches it; pi4cam runs identically with or without it.
+
+**How it works.** `pi4cam` publishes the AEC's Lux estimate to
+`/dev/shm/pi4cam-lux` as write-only telemetry (a few times a minute — no
+filter logic in the main program). The standalone daemon
+`scripts/ircut_release_gpio.py --watch` reads that number and drives the GPIO
+with two-threshold hysteresis:
+
+- **GPIO output low** → **day** (filter engaged, true colours)
+- **GPIO input / no pull** → **night** (filter retracted; the module lights
+  its own IR LEDs separately)
+
+Field-tested polarity — **confirm on yours**, the Waveshare wiki has it
+backwards. Wiring: the module's IR-CUT control pin to a free GPIO
+(field-tested **BCM17 = physical pin 11**) with a **common ground** (already
+shared if the module is powered from the Pi's CSI/header).
+
+> **⚠ The feedback trap — the one thing to get right.** The measured Lux
+> *depends on the filter position*: engaged, IR is blocked (a dusk scene read
+> ~7 lux); retracted, the IR + the module's own LEDs reach the sensor, so the
+> **same** scene reads much higher (~27 lux). If `--day-above` sits below that
+> IR-lit reading, the filter **oscillates** (dark → retract → Lux jumps above
+> day_above → re-engage → Lux drops → …, a ~75 s clignotement seen in the
+> field). **`--day-above` must be set ABOVE the Lux the scene reads at night
+> with the filter out** — the daemon logs it. Field values: filter-in dusk
+> ≈ 7 lux, filter-out IR-lit ≈ 27 lux → `--day-above 45` keeps night stable
+> while a real dawn (visible light, well past 45) still flips back cleanly.
+
+### Enable
+
+1. **Wire it** (above) and confirm the pin controls the filter — you should
+   hear a click:
+   ```bash
+   python3 scripts/ircut_release_gpio.py --gpio 17 --night   # filter out
+   python3 scripts/ircut_release_gpio.py --gpio 17 --day     # filter in
+   python3 scripts/ircut_release_gpio.py --gpio 17 --status
+   ```
+2. **Enable the Lux telemetry** — it is **opt-in** (empty = off, the shipped
+   default): set the key in `/opt/pi4cam/config.yaml`
+   ```yaml
+   camera:
+     lux_path: /dev/shm/pi4cam-lux
+   ```
+   then deploy/restart (`install.sh` runs the camera from `/opt/pi4cam` — a
+   `git pull` alone is not enough) and verify:
+   ```bash
+   sudo bash install.sh           # safest full deploy (preserves your config)
+   sudo systemctl restart pi4cam
+   cat /dev/shm/pi4cam-lux        # a number must appear within a few seconds
+   ```
+   Without the key, the daemon logs `no fresh Lux` and holds day mode.
+3. **Install the daemon** (`install.sh` does **not** deploy `scripts/` — it
+   runs from your git checkout, so fix the path and pin):
+   ```bash
+   sudo cp scripts/pi4cam-ircut-release.service /etc/systemd/system/
+   sudo sed -i "s#/home/pi/pi4-IA-Homekit-Camera#$HOME/pi4-IA-Homekit-Camera#" \
+     /etc/systemd/system/pi4cam-ircut-release.service
+   # edit --gpio and the thresholds in the unit if needed, then:
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now pi4cam-ircut-release.service
+   journalctl -u pi4cam-ircut-release -f
+   ```
+   You should see a single `→ NIGHT` / `→ DAY` per real transition and stable
+   `lux=… state=…` heartbeats in between — **not** a flip-flop (if it clignote,
+   raise `--day-above`, see the feedback trap).
+
+### Disable
+
+```bash
+sudo systemctl disable --now pi4cam-ircut-release.service
+python3 scripts/ircut_release_gpio.py --gpio 17 --day   # leave the filter engaged (day)
+```
+
+Stopping the daemon leaves the GPIO wherever it last was, so reset it to day
+(or unplug the control wire — the module reverts to its own default). To also
+stop the telemetry, clear `camera.lux_path` in `/opt/pi4cam/config.yaml`
+(empty = off) and restart `pi4cam` — though leaving it on is harmless
+(~10 bytes to tmpfs every 2 s).
+
+### Calibrate
+
+Watch `journalctl -u pi4cam-ircut-release -f` and set the thresholds in the
+service unit's `ExecStart` from real readings on your rig:
+
+- **`--night-below`** (script default 8; the shipped unit passes 15) — how dark
+  before it goes night. Raise it to switch earlier at dusk (more ambient light
+  left), lower it to wait for deeper dark.
+- **`--day-above`** (default 45) — the anti-oscillation guard: keep it **above**
+  your filter-out night Lux (the trap above). Only `--day-above > --night-below`
+  is valid.
+- **`--samples` / `--interval`** (default 4 × 15 s ≈ 1 min sustained) — debounce,
+  so a cloud or a passing headlight never toggles the filter. Shorten both for a
+  snappier test run.
+
+**Relation to `ir_grayscale`.** They are complementary layers, not the same
+thing: the IR-cut is the *physical* filter (colours by day, IR sensitivity by
+night); `ir_grayscale` (software, above) neutralises the residual pink cast
+that returns at night once the filter is retracted and the IR LEDs are on. With
+a working IR-cut you can leave `ir_grayscale` off and accept a slight night
+tint, or enable it for clean grayscale nights — your call.
 
 ---
 

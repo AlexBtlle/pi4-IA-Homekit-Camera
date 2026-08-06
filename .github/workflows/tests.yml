@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install pytest pyyaml
+      - run: pip install pytest pyyaml numpy
       - run: pytest
 
   typescript:
@@ -29,8 +29,11 @@ jobs:
       - run: npm ci
         working-directory: homekit
       # Typecheck + compile: vitest transpiles without checking types, so on
-      # its own it only exercises the modules the tests import.
+      # its own it only exercises the modules the tests import. `typecheck`
+      # additionally covers tests/ — the build tsconfig includes src/ only.
       - run: npm run build
+        working-directory: homekit
+      - run: npm run typecheck
         working-directory: homekit
       - run: npm test
         working-directory: homekit
