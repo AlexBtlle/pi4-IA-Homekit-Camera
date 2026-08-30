@@ -64,6 +64,43 @@ All three services use `Restart=on-failure`, so a crash is followed by an
 automatic restart. A tight restart loop means the same error keeps recurring —
 read the log for the reason.
 
+### Logs do not survive a reboot
+
+On Raspberry Pi OS the systemd journal is kept in RAM and discarded when the
+machine restarts, so `journalctl -b -1` reports:
+
+```
+Specifying boot ID or boot offset has no effect, no persistent journal was found.
+```
+
+A failure that ends in a reboot therefore cannot be investigated afterwards —
+neither the reason for the restart nor anything logged before it.
+
+Persistence can be turned on. **The installer does not do this, and this guide
+does not advise it either** — it is written down so the option is known, with
+its cost stated:
+
+```bash
+sudo mkdir -p /etc/systemd/journald.conf.d
+printf '[Journal]\nStorage=persistent\nSystemMaxUse=50M\n' \
+  | sudo tee /etc/systemd/journald.conf.d/persistent.conf
+sudo systemctl restart systemd-journald
+```
+
+What it costs: the journal is then written to the SD card continuously, for as
+long as the camera runs. `SystemMaxUse` caps how much space it occupies — not
+how often it writes, which is what wears the card out. This project moves
+snapshots to `/dev/shm` for that exact reason, so enabling this trades a known
+wear source against the ability to diagnose across a reboot. On a camera that
+runs 24/7 and is never touched, that trade is not obviously worth making.
+
+To undo it:
+
+```bash
+sudo rm /etc/systemd/journald.conf.d/persistent.conf
+sudo systemctl restart systemd-journald
+```
+
 ---
 
 ## Thermal & throttling
