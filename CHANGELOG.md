@@ -8,7 +8,21 @@ so they summarise each version rather than reproducing its release notes.
 
 Versions track `homekit/package.json`; each release is tagged in git.
 
-## [1.7] — 2026-08-05
+## [Unreleased]
+
+### Fixed
+
+- **Camera stuck "Not Responding" after a reboot** (#65). HAP announces the
+  accessory over mDNS on the interfaces present when it publishes; started
+  before Wi-Fi held an address, it was never re-announced, so a perfectly
+  healthy service stayed invisible to HomeKit until a manual restart — 16 h 40
+  in the field incident that surfaced it. The service now waits for a
+  non-loopback IPv4 before publishing, and exits non-zero after 120 s so
+  systemd retries. systemd ordering could not fix this: the unit already
+  ordered itself after `network-online.target`, which NetworkManager reached
+  40 s before it associated the Wi-Fi.
+
+## [1.7] — 2026-08-07
 
 ### ⚠ Upgrade notes
 
