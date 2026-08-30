@@ -28,6 +28,7 @@ import { SnapshotProvider } from "./snapshot";
 import { StreamingDelegate } from "./streaming";
 import { RecordingDelegate } from "./recording";
 import { MotionService } from "./motion";
+import { IPV4_WAIT_TIMEOUT_MS, waitForIPv4 } from "./network";
 import { QrWebServer } from "./qrweb";
 
 /** App version straight from package.json — the single source of truth.
@@ -43,7 +44,21 @@ function appVersion(): string {
   }
 }
 
-function main(): void {
+async function main(): Promise<void> {
+  // HAP announces the accessory over mDNS on the interfaces present when it
+  // publishes; started before the Wi-Fi holds an address, it is never
+  // re-announced and the camera stays "Not Responding" until a manual restart,
+  // however healthy the process looks (#65). systemd ordering does not cover
+  // this: NetworkManager-wait-online returns once the interface is merely
+  // "disconnected", up to 40 s before it associates.
+  if (!(await waitForIPv4())) {
+    console.error(
+      `[main] still no non-loopback IPv4 after ${IPV4_WAIT_TIMEOUT_MS / 1000}s` +
+        " — exiting so systemd retries from scratch",
+    );
+    process.exit(1);
+  }
+
   const config = loadConfig();
   const pairing = loadPairing();
 
@@ -256,4 +271,7 @@ function printPairing(
   console.log("");
 }
 
-main();
+main().catch((err) => {
+  console.error("[main] fatal error during startup:", err);
+  process.exit(1);
+});
