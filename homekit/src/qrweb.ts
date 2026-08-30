@@ -5,6 +5,7 @@ import net from "net";
 import os from "os";
 import qrcode from "qrcode-terminal";
 import type { MotionService } from "./motion";
+import { ipv4Addresses } from "./network";
 import type { RecordingDelegate } from "./recording";
 
 type Health = "ok" | "warn" | "crit" | "muted";
@@ -29,6 +30,10 @@ export class QrWebServer {
     // Same default as config.ts's rtsp.port fallback — kept optional so the
     // constructor stays compatible, but main.ts passes the configured value.
     private readonly rtspPort: number = 8554,
+    // Non-loopback IPv4 addresses held when the accessory was announced over
+    // mDNS. Empty means "unknown" — the page then reports the address without
+    // judging it. See the HomeKit announce row for what the comparison buys.
+    private readonly publishedAddresses: string[] = [],
   ) {}
 
   start(): this {
@@ -141,6 +146,14 @@ export class QrWebServer {
     const pi4camLevel: Health =
       pi4camActive === null ? "muted" : pi4camActive ? "ok" : "crit";
     const snapLevel: Health = snap.fresh ? "ok" : "crit";
+    // HAP announces itself over mDNS on the addresses present at publish time
+    // and never re-announces on its own. So a *running* accessory can be
+    // unreachable, which is exactly how a 16 h outage went unreported here
+    // (#66): every other probe was green throughout. Comparing what was
+    // announced against what exists now is the one honest signal available —
+    // the library's Advertiser exposes no state of its own.
+    const addresses = ipv4Addresses();
+    const announceLevel = announceHealth(this.publishedAddresses, addresses);
 
     // Overall pill: worst of the meaningful signals (swap stays informational).
     const worst = worstOf([
@@ -149,6 +162,7 @@ export class QrWebServer {
       mediamtxLevel,
       pi4camLevel,
       snapLevel,
+      announceLevel,
     ]);
     const pill =
       worst === "crit"
@@ -170,6 +184,14 @@ export class QrWebServer {
     const snapVal = snap.fresh
       ? `fresh${snap.ageSec !== null ? ` <small>· ${snap.ageSec}s ago</small>` : ""}`
       : "stale";
+    const announceVal =
+      addresses.length === 0
+        ? "no IPv4"
+        : this.publishedAddresses.length === 0
+          ? esc(addresses.join(", "))
+          : announceLevel === "ok"
+            ? esc(addresses.join(", "))
+            : `stale <small>· announced on ${esc(this.publishedAddresses.join(", "))}, now ${esc(addresses.join(", "))}</small>`;
     const hksvVal =
       hksv === null
         ? `${dot("muted")}n/a`
@@ -293,6 +315,7 @@ export class QrWebServer {
         <div class="row"><span class="name">pi4cam-homekit</span><span class="val">${dot("ok")}running</span></div>
         <div class="row"><span class="name">pi4cam</span><span class="val">${dot(pi4camLevel)}${pi4camActive === null ? "n/a" : pi4camActive ? "running" : "stopped"}</span></div>
         <div class="row"><span class="name">mediamtx</span><span class="val">${dot(mediamtxLevel)}${mediamtxOk ? `RTSP :${this.rtspPort}` : "down"}</span></div>
+        <div class="row"><span class="name">HomeKit announce</span><span class="val">${dot(announceLevel)}${announceVal}</span></div>
       </div>
     </div>
 
@@ -422,14 +445,32 @@ function worstOf(levels: Health[]): Health {
 }
 
 function localIP(): string {
-  for (const ifaces of Object.values(os.networkInterfaces())) {
-    for (const iface of ifaces ?? []) {
-      if (iface.family === "IPv4" && !iface.internal) {
-        return iface.address;
-      }
-    }
+  return ipv4Addresses()[0] ?? "127.0.0.1";
+}
+
+/** Set equality over two already-sorted address lists. */
+export function sameAddresses(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((value, i) => value === b[i]);
+}
+
+/**
+ * Health of the mDNS announcement, from the addresses it was made on versus
+ * the addresses that exist now.
+ *
+ * `crit` with no address at all — nothing can reach the accessory. `muted`
+ * when the announcement set is unknown (nothing to compare, so nothing to
+ * claim). `warn` when they differ: HAP does not re-announce by itself, so the
+ * advertisement is stale and HomeKit may show the camera as not responding
+ * even though every other probe on this page is green (#66).
+ */
+export function announceHealth(published: string[], current: string[]): Health {
+  if (current.length === 0) {
+    return "crit";
   }
-  return "127.0.0.1";
+  if (published.length === 0) {
+    return "muted";
+  }
+  return sameAddresses(published, current) ? "ok" : "warn";
 }
 
 function formatUptime(seconds: number): string {

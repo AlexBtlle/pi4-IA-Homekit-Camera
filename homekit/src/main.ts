@@ -28,7 +28,7 @@ import { SnapshotProvider } from "./snapshot";
 import { StreamingDelegate } from "./streaming";
 import { RecordingDelegate } from "./recording";
 import { MotionService } from "./motion";
-import { IPV4_WAIT_TIMEOUT_MS, waitForIPv4 } from "./network";
+import { IPV4_WAIT_TIMEOUT_MS, ipv4Addresses, waitForIPv4 } from "./network";
 import { QrWebServer } from "./qrweb";
 
 /** App version straight from package.json — the single source of truth.
@@ -227,6 +227,11 @@ async function main(): Promise<void> {
     addIdentifyingMaterial: true,
   });
 
+  // What HAP was actually announced on. mDNS advertisements are not redone
+  // when addresses change, so the status page compares this against the live
+  // addresses to surface an announcement that no longer matches (#66).
+  const announcedOn = ipv4Addresses();
+
   const qrWeb = new QrWebServer(
     accessory.setupURI(),
     pairing.pincode,
@@ -236,6 +241,7 @@ async function main(): Promise<void> {
     motion,
     recordingDelegate,
     config.rtspPort,
+    announcedOn,
   ).start();
 
   motion.start();

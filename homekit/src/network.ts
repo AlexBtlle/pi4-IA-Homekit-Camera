@@ -15,14 +15,26 @@ export const IPV4_POLL_MS = 1_000;
  * "Not Responding" until someone restarts the service (#65).
  */
 export function hasUsableIPv4(read: InterfaceReader = networkInterfaces): boolean {
+  return ipv4Addresses(read).length > 0;
+}
+
+/**
+ * Every non-loopback IPv4 address the host currently holds, sorted.
+ *
+ * Sorted so two snapshots can be compared as sets: the status page contrasts
+ * the addresses HAP was announced on against the addresses that exist now, an
+ * inequality meaning the mDNS announcement no longer matches reality (#66).
+ */
+export function ipv4Addresses(read: InterfaceReader = networkInterfaces): string[] {
+  const found: string[] = [];
   for (const addresses of Object.values(read())) {
     for (const address of addresses ?? []) {
       if (address.family === "IPv4" && !address.internal) {
-        return true;
+        found.push(address.address);
       }
     }
   }
-  return false;
+  return found.sort();
 }
 
 export interface WaitForIPv4Options {
