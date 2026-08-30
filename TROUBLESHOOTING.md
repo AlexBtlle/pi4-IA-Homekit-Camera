@@ -43,7 +43,8 @@ Before digging in, two quick checks cover most situations.
 **1. The status dashboard.** Open `http://<pi-hostname>.local:8080` — the page
 shows an at-a-glance health view: overall status pill, temperature and throttle
 state, CPU load, RAM/swap, uptime, service status, snapshot freshness, HKSV
-armed state and last motion. Start here.
+armed state, last motion, and whether the HomeKit mDNS announcement still
+matches the machine's addresses. Start here.
 
 **2. The logs.** Follow each service live:
 
@@ -564,6 +565,20 @@ The Home app then sees the same camera — no re-pairing needed.
 
 - **Camera not found when adding it** — the iPhone and the Pi must be on the same
   network, and mDNS must work. Check `avahi-daemon` is running.
+- **Camera already paired shows "Not Responding"** — usually the mDNS
+  announcement no longer matches the machine. HAP announces the accessory on
+  the addresses it holds at startup and never re-announces on its own, so a
+  changed IP address leaves a perfectly healthy camera unreachable: the service
+  keeps running, motion keeps being detected, and only HomeKit sees nothing.
+  The dashboard's *HomeKit announce* row reports this. The fix is a restart:
+
+  ```bash
+  sudo systemctl restart pi4cam-homekit
+  ```
+
+  The startup case — service announcing before Wi-Fi has an address, seen after
+  a reboot — no longer happens: the service now waits for a non-loopback IPv4
+  before announcing.
 - **"Recording Options" missing in the Home app** — the accessory's capabilities
   are cached at pairing time. Remove the camera from the Home app and pair it
   again.

@@ -22,6 +22,16 @@ Versions track `homekit/package.json`; each release is tagged in git.
   ordered itself after `network-online.target`, which NetworkManager reached
   40 s before it associated the Wi-Fi.
 
+### Added
+
+- **Status page reports whether the HomeKit announcement is still valid**
+  (#66). Throughout the outage above, the dashboard read "All systems normal" —
+  correctly, since every probe it ran was green. A *HomeKit announce* row now
+  compares the addresses the accessory was announced on against those the
+  machine holds now, and feeds the overall pill, so an unreachable camera can
+  no longer render as healthy. It also covers an address changing under a
+  running accessory, which the startup guard does not.
+
 ## [1.7] — 2026-08-07
 
 ### ⚠ Upgrade notes
